@@ -1,0 +1,133 @@
+Crudo con confusoras:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+  --bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+  --1 ^
+  --pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+  --pheno-name covid_persistente ^
+  --covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+  --covar-name sexo,edad_final,edad_sq,BATCH.y,sexo_edad ^
+  --logistic hide-covar ^
+  --allow-no-sex ^
+  --missing-var-code NA ^
+  --out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\GWAS_AJUSTADO_CONFUSORAS"
+
+
+
+Crudo con confusoras y grupo:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+  --bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+  --1 ^
+  --pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+  --pheno-name covid_persistente ^
+  --covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+  --covar-name sexo,edad_final,edad_sq,BATCH.y,sexo_edad, Grupo ^
+  --logistic hide-covar ^
+  --allow-no-sex ^
+  --missing-var-code NA ^
+  --out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\GWAS_grupo_CONFUSORAS"
+
+
+Para con nombre de SNPs sacar IDIVIDUOS
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+  --bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+  --extract "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\TOP_SNPS_clumped.txt" ^
+  --recode AD ^
+  --out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\datos_indv_para_SNPS_confusorads"
+
+
+
+
+Para NA:
+
+GWAS:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+--bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+--1 ^
+--pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+--pheno-name covid_persistente ^
+--covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+--covar-name sexo,Obesidad,uci,asintomatico,tabaquismo ^
+--logistic hide-covar ^
+--missing-var-code NA ^
+--allow-no-sex ^
+--out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\GWAS_NA"
+
+
+LASSO:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+--bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+--1 ^
+--pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+--pheno-name covid_persistente ^
+--covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_NA_EUR_1344.txt" ^
+--covar-name sexo,Obesidad,uci,asintomatico,tabaquismo ^
+--allow-no-sex ^
+--lasso 0.5 ^
+--out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\LASSO_NA"
+
+
+
+Para imputados:
+
+GWAS:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+--bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+--1 ^
+--pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_imp_EUR_1341.txt" ^
+--pheno-name covid_persistente ^
+--covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_imp_EUR_1341.txt" ^
+--covar-name sexo,Obesidad,uci,asintomatico,tabaquismo ^
+--logistic hide-covar ^
+--missing-var-code NA ^
+--allow-no-sex ^
+--out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\GWAS_IMP"
+
+LASSO:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+--bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+--1 ^
+--pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_imp_EUR_1341.txt" ^
+--pheno-name covid_persistente ^
+--covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_imp_EUR_1341.txt" ^
+--covar-name sexo,Obesidad,uci,asintomatico,tabaquismo ^
+--allow-no-sex ^
+--lasso 0.5 ^ 
+--out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\LASSO_IMP"
+
+
+Para CATEGORIA3:
+
+GWAS:
+
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+--bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+--1 ^
+--pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_cat3_EUR_1344.txt" ^
+--pheno-name covid_persistente ^
+--covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_cat3_EUR_1344.txt" ^
+--covar-name sexo,Obesidad,uci,asintomatico,tabaquismo ^
+--logistic hide-covar ^
+--missing-var-code NA ^
+--allow-no-sex ^
+--out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\GWAS_CAT3"
+
+
+Crudo:
+
+GWAS:
+"C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+--bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05" ^
+--1 ^
+--allow-no-sex ^
+--bfile R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\Full\qc_geno_0.05 ^
+--logistic ^
+--missing-var-code NA ^
+--out R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\GWAS_CRUDO ^
+--pheno R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\bbdd_cat3_EUR_1344.txt ^
+--pheno-name covid_persistente ^
