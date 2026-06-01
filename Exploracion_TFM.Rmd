@@ -1,0 +1,941 @@
+---
+title: "Exploracion_EUR"
+author: "sara sanchez"
+date: "2026-04-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(janitor)
+library(dplyr)
+library(readxl)
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(ggrepel) 
+library(tidyverse)
+library(gtsummary)
+```
+
+
+
+# 1. Lectura inicial
+
+## 1.1.Filtro EUROPEOS
+```{r}
+ruta <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Trabajo Courtney/covars.xlsx"
+datos <- read_excel(path=ruta, sheet = "20230330_data_lbl_tab_ordenado")
+dim(datos)      # filas x columnas
+nrow(datos)
+
+datos <- datos[datos$EUR == 1, ]
+NROW(datos)
+datos <- datos %>% 
+  clean_names()
+names(datos)
+```
+
+2777 TOTALES
+1566 EUROPEOS
+
+## 1.2. Filtro genotipado
+Ver los que tenemos genotipados:
+
+```{r}
+
+# 1. Leer el archivo (especificamos que no tiene encabezado)
+fam_ids <- read_table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/Full/qc_geno_0.05.fam", 
+                      col_names = FALSE)
+
+
+datos <- datos %>%
+  filter(iid%in% fam_ids$X1)
+nrow(datos)
+```
+
+1491 EUROPEOS Y GENOTIPADOS
+
+## 1.3.Filtro NA en variables clave
+Elimino los que tengan NA en sexo, edad, covid_persistente u hospitalizacion
+```{r}
+# 1. Definimos las columnas a limpiar
+cols_interes <- c("sexo", "edad_final", "covid_persistente", "hospitalizacion")
+
+# 2. Convertimos los -9 a NA solo en esas columnas
+for(col in cols_interes) {
+  datos[[col]][datos[[col]] == -9] <- NA
+}
+
+# 3. Nos quedamos solo con las filas que no tienen NA en esas columnas
+datos_sin_NA <- datos[complete.cases(datos[, cols_interes]), ]
+
+datos<-datos_sin_NA
+nrow(datos)
+```
+1344 EUR, GEOTIPADOS, y completos
+
+
+# 2. Variables
+
+## 2.1.Frec de comrbilidades TODAS
+```{r}
+library(dplyr)
+library(tidyr)
+
+# 1. Aseguramos que todos los -9 sean NA en todo el dataframe
+datos[datos == -9] <- NA
+
+# 2. Lista de variables (asegúrate de que coincidan con tus nombres de columna)
+todas_comorb <- c(
+  "hipertension_arterial", "hipercolesterolemia", "diabetes", "obesidad",
+  "cardiopatia_isquemica", "insuficiencia_cardiaca", "aritmia_cardiaca",
+  "vasculopatia_periferica", "enfermedad_cerebrovascular", "demencia",
+  "otra_enfermedad_neurologica", "epoc", "otra_enfermedad_respiratoria_cronica",
+  "ulcera_peptida", "hepatopatia", "tumor_solido", "tumor_hematologico",
+  "enfermedad_renal", "inmunosupresion", "transplante_de_organo_solido",
+  "enfermedad_del_tejido_conectivo"
+)
+
+# 3. Generar tabla detallada
+tabla_detalle <- datos %>%
+  summarise(across(all_of(todas_comorb), list(
+    Presencia = ~sum(. == 1, na.rm = TRUE),
+    NAs = ~sum(is.na(.))
+  ))) %>%
+  pivot_longer(everything(), 
+               names_to = c("Variable", ".value"), 
+               names_sep = "_") %>%
+  mutate(Porcentaje_Presencia = round((Presencia / nrow(datos)) * 100, 2))
+
+# Mostrar resultado
+print(tabla_detalle,n=21)
+```
+
+
+
+## ¡Agrupacion variables sin poca frec!
+
+```{r}
+identific<- c("iid", "fid", "grupo", "covid_persistente")
+
+demogra <- c("sexo", "edad_final", "bmi", "embarazo_diag", "tabaquismo", "seg_vacunado")
+
+
+gravedad_vars <- c("hospitalizacion", "uci", "asintomatico", "num_syms_s1_real", "num_syms_s13_real")
+
+comorb_vars <- c("hipertension_arterial", "hipercolesterolemia", "diabetes", "obesidad", "cardiopatia_isquemica", "aritmia_cardiaca", "enfermedad_cerebrovascular","otra_enfermedad_neurologica", "epoc", "otra_enfermedad_respiratoria_cronica","hepatopatia", "tumor_solido", "enfermedad_renal")
+
+
+sint_agudo <- c("fiebre1", "cansancio1", "tos", "mialgia", "disnea1", "expect", 
+ "odinofag", "cefalea", "nausea", "diarrea", "dolor_abdominal", "dolor_torax", "anosmia", "dermato")
+
+
+sint_s1 <- c("fiebre_long", "vomitos_long", "astenia_long", "disnea_long", "dolor_torax_long", "tos_long", "dolor_articular_long","mialgia_long","cefalea_long", "diarrea_long", "afonia_long", "anosmia_long",  "disgeusia_long", "otro_long", "niebla_mental_s1", "insomnio_s1")
+
+
+sint_s13 <- c("fiebre_long_s13", "vomitos_long_s13", "astenia_long_s13",  "disnea_long_s13", "dolor_torax_long_s13", "tos_long_s13", "dolor_articular_long_s13","mialgia_long_s13","cefalea_long_s13","diarrea_long_s13", "afonia_long_s13", "anosmia_long_s13", "disgeusia_long_s13", "otro_long_s13", "niebla_mental_s13", "insomnio_s13")
+
+```
+
+
+```{r}
+
+# 1. Aplicar la lógica: 
+# Si sexo == 1 (Hombre) O edad_final <= 5, ponemos embarazo_diag en 0.
+# Mantenemos el valor original en caso contrario.
+datos <- datos %>%
+  mutate(embarazo_diag = if_else(sexo == 1 | edad_final <= 5, 0, embarazo_diag))
+
+# 2. Contar NAs y Frecuencia de '1' (presencia) en embarazo_diag
+resultado_embarazo <- datos %>%
+  summarise(
+    Variable = "embarazo_diag",
+    Frecuencia_1 = sum(embarazo_diag == 1, na.rm = TRUE),
+    Total_NAs = sum(is.na(embarazo_diag)),
+    Porcentaje_Presencia = round((Frecuencia_1 / n()) * 100, 2)
+  )
+
+# Mostrar el resultado
+print(resultado_embarazo)
+```
+
+
+
+## 2.2.Transformacion
+
+
+### A.sintomas DURNATE COVID =0 si no estan infomados
+```{r}
+library(dplyr)
+
+
+# Creamos indicadores por fila
+conteo_filas <- datos %>%
+  rowwise() %>%
+  mutate(
+    tiene_0 = any(c_across(all_of(sint_agudo)) == 0, na.rm = TRUE),
+    tiene_1 = any(c_across(all_of(sint_agudo)) == 1, na.rm = TRUE),
+    tiene_NA = any(is.na(c_across(all_of(sint_agudo))))
+  ) %>%
+  ungroup()
+
+# A. Filas que tienen 0, 1 y NA SIMULTÁNEAMENTE en sus síntomas
+filas_mix_completo <- conteo_filas %>%
+  filter(tiene_0 & tiene_1 & tiene_NA) %>%
+  nrow()
+
+# B. Filas que SOLO tienen 0 y NA (es decir, no hay ningún 1)
+filas_solo_0_NA <- conteo_filas %>%
+  filter(tiene_0 & tiene_NA & !tiene_1) %>%
+  nrow()
+
+# C. Filas que SOLO tienen 0 (todos los síntomas informados como ausencia)
+filas_todo_0 <- conteo_filas %>%
+  filter(tiene_0 & !tiene_NA & !tiene_1) %>%
+  nrow()
+
+cat("Filas con (0, 1 y NA) a la vez:", filas_mix_completo, "\n")
+cat("Filas con SOLO (0 y NA) - Sin ningún 1:", filas_solo_0_NA, "\n")
+```
+
+### B.asintomatico
+```{r}
+# Creamos una columna temporal de control
+datos <- datos %>%
+  mutate(suma_sintomas = rowSums(select(., all_of(sint_agudo)) == 1, na.rm = TRUE))
+
+# Tabla de verdad: ¿Es coherente la variable asintomatico?
+# Lo ideal: si asintomatico == 1, suma_sintomas DEBE ser 0.
+# Lo ideal: si asintomatico == 0, suma_sintomas DEBE ser > 0.
+test_consistencia <- table(Asintomatico_Informado = datos$asintomatico, 
+                           Tiene_Sintomas_Reales = datos$suma_sintomas > 0, 
+                           useNA = "always")
+
+print("Tabla de consistencia (Asintomático vs Síntomas Reales):")
+print(test_consistencia)
+
+
+```
+
+
+### C.uci 
+Si un individuo no ha estado hospitalizado, no ha podido estar en uci.
+
+$H_0$: No hay una diferencia sistemática entre estar hospitalizado y estar en la UCI (los errores o desacuerdos en la tabla son aleatorios y están equilibrados).$H_1$: Existe una asimetría significativa en los desacuerdos. Es decir, es mucho más probable que ocurra una combinación (ej. Hospitalizado=1 / UCI=0) que la contraria (Hospitalizado=0 / UCI=1).Hay una direccionalidad clara: El "desacuerdo" se concentra masivamente en personas hospitalizadas que no pisan la UCI.
+```{r}
+library(dplyr)
+
+# 1. Comprobación: ¿Cuántos casos inconsistentes hay antes de corregir?
+errores_uci <- datos %>%
+  filter(hospitalizacion == 0 & uci == 1) %>%
+  nrow()
+
+cat("Casos con UCI=1 pero Hospitalización=0 detectados:", errores_uci, "\n")
+
+# 2. Aplicar la regla: Si hospitalizacion es 0, UCI debe ser 0 obligatoriamente
+datos <- datos %>%
+  mutate(uci = if_else(hospitalizacion == 0, 0, uci))
+
+# 3. Ver frecuencia y NAs después de la corrección
+resumen_uci <- datos %>%
+  summarise(
+    Variable = "uci",
+    Frecuencia_1 = sum(uci == 1, na.rm = TRUE),
+    Frecuencia_0 = sum(uci == 0, na.rm = TRUE),
+    Total_NAs = sum(is.na(uci))
+  )
+
+print(resumen_uci)
+
+# Para la tabla de contingencia hospitalizacion vs uci
+mcnemar.test(table(datos$hospitalizacion, datos$uci))
+```
+## 2.3. Aplicacion reglas
+
+```{r}
+library(dplyr)
+
+
+# 2. REGLA 1: IMPUTAR NAs A 0 EN TODOS LOS SÍNTOMAS
+# Basado en el sesgo de reporte (si no se anota, es ausencia)
+datos2 <- datos %>%
+  mutate(across(all_of(c(sint_agudo, sint_s1, sint_s13)), 
+                ~replace_na(., 0)))
+
+# 3. REGLA 2: RECONSTRUIR VARIABLE ASINTOMATICO
+# Recalculamos la suma de síntomas durante el covid agudo
+datos2 <- datos2 %>%
+  mutate(suma_sintomas_temp = rowSums(select(., all_of(sint_agudo)) == 1)) %>%
+  mutate(asintomatico = if_else(suma_sintomas_temp > 0, 0, 1)) %>%
+  select(-suma_sintomas_temp) # Borramos la columna temporal
+
+# 4. REGLA 3: GRAVEDAD (UCI Y HOSPITALIZACIÓN)
+datos2 <- datos2 %>%
+  # Si no hubo hospitalización, forzamos UCI a 0 (aunque fuera NA)
+  mutate(uci = if_else(hospitalizacion == 0, 0, uci)) %>%
+  # Borramos las filas donde UCI siga siendo NA 
+  # (Suelen ser casos donde Hospitalizacion también era NA)
+  filter(!is.na(uci))
+
+
+
+# 5.REGLA 5: eliminar poca frec
+
+
+datos2<-datos2%>%
+  select(all_of(identific),all_of(demogra), all_of(gravedad_vars),all_of(comorb_vars), all_of(sint_agudo),all_of(sint_s1), all_of(sint_s13))
+
+
+#  COMPROBACIÓN FINAL
+cat("Dimensiones previas del dataset:", dim(datos)[1], "filas y", dim(datos)[2], "columnas\n")
+
+cat("Dimensiones previas del dataset:", dim(datos2)[1], "filas y", dim(datos2)[2], "columnas\n")
+```
+
+
+
+## 2.4. EDA
+
+
+```{r}
+
+generar_tabla_persistente <- function(data, lista_vars, titulo) {
+  data %>%
+    select(covid_persistente, all_of(lista_vars)) %>%
+    tbl_summary(
+      by = covid_persistente,
+      statistic = list(
+        all_continuous() ~ "{mean} ({sd})",
+        all_categorical() ~ "{n} ({p}%)"
+      ),
+      missing = "no"
+    ) %>%
+    add_p(
+      test = list(
+        all_continuous() ~ "t.test",
+        all_categorical() ~ "fisher.test"
+      ),
+      test.args = all_categorical() ~ list(simulate.p.value = TRUE)
+    ) %>%
+    add_n(statistic = "{N_miss}", last = TRUE) %>% 
+    modify_header(
+      label = "**Variable**",
+      n = "**NAs**",
+      p.value = "**p-valor**"
+    ) %>%
+    modify_caption(paste("Comparativa de", titulo, "entre Controles y Casos de COVID Persistente")) 
+}
+
+# 3. Ejecución de las tablas por bloques
+tabla_demograficos <- generar_tabla_persistente(datos2, demogra, "Factores Demográficos")
+tabla_agudos       <- generar_tabla_persistente(datos2, sint_agudo, "Síntomas Agudos")
+tabla_comorb       <- generar_tabla_persistente(datos2, comorb_vars, "Comorbilidades")
+tabla_s1 <- generar_tabla_persistente(datos2, sint_s1, "Sintomas s1")
+
+tabla_s13<- generar_tabla_persistente(datos2, sint_s13, "Sintomas s13")
+
+# Visualización
+tabla_agudos
+tabla_demograficos
+tabla_comorb
+tabla_s1
+tabla_s13
+```
+
+
+## 2.3.Imputacion
+```{r}
+library(tidyverse)
+library(gtsummary)
+
+# 1. Preparamos los datos: creamos variables que indican si hay un NA (1) o no (0)
+# Esto nos permite comparar la "falta de datos" entre grupos
+datos_nas <- datos2 %>%
+  select(covid_persistente, embarazo_diag, tabaquismo, bmi, seg_vacunado) %>%
+  mutate(across(-covid_persistente, ~as.numeric(is.na(.)), .names = "na_{.col}"))
+
+# 2. Creamos la tabla comparando la presencia de NAs
+tabla_nas_pvalor <- datos_nas %>%
+  select(covid_persistente, starts_with("na_")) %>%
+  tbl_summary(
+    by = covid_persistente,
+    statistic = all_categorical() ~ "{n}", # Mostramos el número absoluto de NAs
+    label = list(
+      na_embarazo_diag ~ "NAs en Embarazo",
+      na_tabaquismo ~ "NAs en Tabaquismo",
+      na_bmi ~ "NAs en BMI",
+      na_seg_vacunado ~ "NAs en Vacunación"
+    ),
+    missing = "no"
+  ) %>%
+  add_p(test = list(all_categorical() ~ "fisher.test"),
+        test.args = all_categorical() ~ list(simulate.p.value = TRUE)) %>%
+  modify_header(
+    label = "**Variable con falta de dato**",
+    stat_1 = "**NAs Controles**",
+    stat_2 = "**NAs Casos**",
+    p.value = "**p-valor (Sesgo)**"
+  ) %>%
+  modify_caption("### Análisis de valores perdidos y su significancia por grupo") %>%
+  bold_labels()
+
+# Mostrar tabla
+tabla_nas_pvalor
+```
+
+
+
+
+```{r}
+datos3<-datos2
+```
+
+
+# 3. Fenpotipo : REHACER CON IMPUTACION
+
+## Preparacion
+```{r}
+
+# 1. Definición de variables y limpieza de la lista
+vars_para_mca <- c(demogra, gravedad_vars, comorb_vars, 
+                   sint_agudo, sint_s1, sint_s13)
+
+# Quitamos las continuas que rompen el modelo
+vars_para_mca <- setdiff(vars_para_mca, c("edad_final", "bmi", "num_syms_s1_real", "num_syms_s13_real"))
+
+# Añadimos la nueva categórica y la variable de GRUPO (asegúrate que se llama 'covid_persistente')
+vars_para_mca <- c(vars_para_mca, "BMI_cat", "covid_persistente") 
+
+# 2. Procesamiento SEGURO del Dataset
+datos_MCA <- datos3 %>%
+  mutate(BMI_cat = cut(bmi, 
+                       breaks = c(-Inf, 18.5, 24.9, 29.9, Inf), 
+                       labels = c("Bajo peso", "Normal", "Sobrepeso", "Obesidad"),
+                       right = TRUE)) %>%
+  select(all_of(vars_para_mca)) %>%
+  mutate(across(everything(), as.character)) %>%
+  mutate(across(everything(), ~replace_na(., "0"))) %>%
+  mutate(across(everything(), as.factor))
+```
+
+
+
+## 3.1.MCA
+
+```{r}
+pos_grupo <- which(names(datos_MCA) == "covid_persistente")
+res_mca <- MCA(datos_MCA, quali.sup = pos_grupo, graph = FALSE)
+
+# 4. Preparación de los Centroides (LC_0 y LC_1)
+centroides <- as.data.frame(res_mca$quali.sup$coord)
+centroides$Nombre <- rownames(centroides)
+# Renombramos para el gráfico: covid_persistente_0 -> LC_0, covid_persistente_1 -> LC_1
+centroides$Nombre <- gsub("covid_persistente_0", "LC_0", centroides$Nombre)
+centroides$Nombre <- gsub("covid_persistente_1", "LC_1", centroides$Nombre)
+
+# 5. Función de Graficado para evitar repetir código
+graficar_mca_final <- function(n_top, titulo) {
+  p <- fviz_mca_var(res_mca, 
+                    choice = "var.cat", 
+                    select.var = list(contrib = n_top), 
+                    repel = TRUE, 
+                    col.var = "contrib", 
+                    gradient.cols = c("#999999", "#E7B800", "#FC4E07"),
+                    title = titulo)
+  
+  p + geom_point(data = centroides, aes(x = `Dim 1`, y = `Dim 2`), 
+                 color = "blue", size = 5, shape = 18) +
+      geom_text_repel(data = centroides, aes(x = `Dim 1`, y = `Dim 2`, label = Nombre), 
+                      color = "blue", fontface = "bold", size = 5) +
+      theme_minimal()
+}
+
+# 6. GENERACIÓN DE RESULTADOS
+plot_20 <- graficar_mca_final(20, "MCA: Top 20 Perfiles Clínicos (LC_0 vs LC_1)")
+plot_40 <- graficar_mca_final(40, "MCA: Multivariate Phenotyping of Long COVID vs. Recovered Controls (Top 40 Clinical Contributors)")
+
+# Visualizar (puedes guardarlos con ggsave)
+print(plot_20)
+print(plot_40)
+```
+
+
+
+
+## 3.2. Redes 
+
+### A.Sintomas en casos y contoles
+
+```{r}
+todas_vars <- c(sint_agudo, sint_s1, sint_s13)
+# Función para asegurar que los datos son numéricos y sin NAs
+preparar_matriz <- function(df, vars) {
+  df_sub <- df[, vars]
+  # Convertir todo a numérico (si es factor lo vuelve 1, 2... y restamos 1 para que sea 0, 1)
+  df_num <- as.data.frame(lapply(df_sub, function(x) {
+    as.numeric(as.character(x)) 
+  }))
+  # Eliminamos filas con NA para que la matriz tetracórica sea estable
+  df_num <- na.omit(df_num)
+  return(as.matrix(df_num))
+}
+
+datos_casos <- datos3[datos3$covid_persistente == 1, ]
+datos_controles <- datos3[datos3$covid_persistente == 0, ]
+
+# Creamos las matrices listas para la red
+matriz_casos <- preparar_matriz(datos_casos, todas_vars)
+matriz_controles <- preparar_matriz(datos_controles, todas_vars)
+```
+
+
+
+```{r}
+generar_red_sintomas_final <- function(matriz_datos, grupo_nombre) {
+  
+  # 1. Correlación y Significancia
+  mat_tetra <- psych::tetrachoric(matriz_datos)
+  rho <- mat_tetra$rho
+  n <- nrow(matriz_datos)
+  p_vals <- psych::corr.p(rho, n = n)$p
+  
+  # 2. FILTRO (Fuerza >= 0.25 y p <= 0.05)
+  rho_filtrada <- rho
+  rho_filtrada[p_vals > 0.05] <- 0 
+  rho_filtrada[abs(rho_filtrada) < 0.3] <- 0 
+  
+  # 3. MAPEO DE COLORES
+  nombres_finales <- colnames(rho_filtrada)
+  colores_nodos <- rep("#E0E0E0", length(nombres_finales))
+  colores_nodos[nombres_finales %in% sint_agudo] <- "#FF9999"  # Rojo
+  colores_nodos[nombres_finales %in% sint_s1]    <- "#99FF99"  # Verde
+  colores_nodos[nombres_finales %in% sint_s13]   <- "#9999FF"  # Azul
+  
+  # 4. TÍTULO DESCRIPTIVO EN INGLÉS
+  titulo_eng <- paste0("Symptom Correlation Network: ", grupo_nombre, 
+                       "\n(Method: Tetrachoric correlation, Filters: |rho| >= 0.3, p <= 0.05)",
+                       "\nGreen lines = Positive correlation | Red lines = Inverse correlation")
+
+  # 5. DIBUJAR RED
+  qgraph(rho_filtrada, 
+         layout = "spring",
+         color = colores_nodos,
+         labels = nombres_finales,
+         shape = "rectangle",
+         vsize = 3.5, vsize2 = 2.2,
+         label.cex = 0.9, label.font = 2,
+         posCol = "darkgreen", negCol = "darkred",
+         maximum = 1, minimum = 0.30,
+         esize = 8, exp = 1,
+         repulsion = 0.8,
+         title = titulo_eng,
+         edge.width = 1,   
+         mar = c(7, 5, 10, 5), # Aumentamos margen superior para el título largo
+         # AÑADIR LEYENDA
+         legend = TRUE,
+         groups = list("Acute Phase" = sint_agudo, 
+                       "Week 1" = sint_s1, 
+                       "Week 13" = sint_s13))
+}
+
+
+# --- EXPORTAR CASOS ---
+png("Network_CASOS_0'3.png", width = 3000, height = 2400, res = 300)
+generar_red_sintomas_final(matriz_casos, "CASES (Long Covid)")
+dev.off()
+
+# --- EXPORTAR CONTROLES ---
+png("Network_CONTROLES_0'3.png", width = 3000, height = 2400, res = 300)
+generar_red_sintomas_final(matriz_controles, "CONTROLS")
+dev.off()
+```
+
+
+
+
+
+
+
+### B.Comorbilidades y sintomas S13
+
+```{r}
+vars_comorb_s13 <- c(comorb_vars, sint_s13)
+
+# Separar datos
+datos_casos <- datos3[datos3$covid_persistente == 1, ]
+datos_controles <- datos3[datos3$covid_persistente == 0, ]
+
+# Usamos tu función preparar_matriz (asegúrate de haberla corrido antes)
+matriz_casos_comorb <- preparar_matriz(datos_casos, vars_comorb_s13)
+matriz_controles_comorb <- preparar_matriz(datos_controles, vars_comorb_s13)
+```
+
+
+
+```{r}
+generar_red_comorb_s13 <- function(matriz_datos, grupo_nombre) {
+  
+  # 1. Correlación tetracórica
+  mat_tetra <- psych::tetrachoric(matriz_datos)
+  rho <- mat_tetra$rho
+  n <- nrow(matriz_datos)
+  p_vals <- psych::corr.p(rho, n = n)$p
+  
+  # 2. FILTRO (0.25 suele ir bien para comorbilidades ya que correlacionan menos que los síntomas entre sí)
+  rho_filtrada <- rho
+  rho_filtrada[p_vals > 0.05] <- 0 
+  rho_filtrada[abs(rho_filtrada) < 0.25] <- 0 
+  
+  # 3. MAPEO DE COLORES
+  nombres_nodos <- colnames(rho_filtrada)
+  colores_nodos <- rep("#E0E0E0", length(nombres_nodos))
+  
+  # Naranja para Comorbilidades, Azul para Síntomas S13
+  colores_nodos[nombres_nodos %in% comorb_vars] <- "#FFCC80"# Naranja claro
+  colores_nodos[nombres_nodos %in% sint_s13]    <- "#9999FF" # Azul (el de antes)
+  
+  # 4. TÍTULO
+  titulo_eng <- paste0("Network: Pre-existing Comorbidities vs S13 Symptoms\nGroup: ", grupo_nombre, 
+                       "\n(Filters: |rho| >= 0.25, p <= 0.05)")
+
+  # 5. DIBUJAR
+  qgraph(rho_filtrada, 
+         layout = "spring",
+         labels = nombres_nodos,
+         color = colores_nodos,
+         shape = "rectangle",
+         vsize = 4, vsize2 = 2.5,
+         label.cex = 0.9, label.font = 2,
+         posCol = "darkgreen", negCol = "darkred",
+         maximum = 1, minimum = 0.25,
+         edge.width = 1.2,
+         repulsion = 0.9,
+         title = titulo_eng,
+         mar = c(7, 5, 12, 15),
+         # Leyenda con tus nuevos grupos
+         groups = list("Comorbidities" = comorb_vars, 
+                       "Symptoms S13" = sint_s13),
+         legend = TRUE,
+         legend.cex = 0.5)
+}
+```
+
+
+```{r}
+# Exportar CASOS
+png("Network_COMORB_S13_CASOS.png", width = 3500, height = 2800, res = 300)
+generar_red_comorb_s13(matriz_casos_comorb, "CASES (Long Covid)")
+dev.off()
+
+# Exportar CONTROLES
+png("Network_COMORB_S13_CONTROLES.png", width = 3500, height = 2800, res = 300)
+generar_red_comorb_s13(matriz_controles_comorb, "CONTROLS")
+dev.off()
+```
+
+
+
+### C.Gravedad y S13
+
+```{r}
+# Combinar con Síntomas S13
+vars_severidad_s13 <- c("hospitalizacion", "uci", "asintomatico", sint_s13)
+
+# Separar datos (si no lo hiciste antes)
+datos_casos <- datos3[datos3$covid_persistente == 1, ]
+datos_controles <- datos3[datos3$covid_persistente == 0, ]
+
+# Crear las matrices específicas
+matriz_casos_grav <- preparar_matriz(datos_casos, vars_severidad_s13)
+matriz_controles_grav <- preparar_matriz(datos_controles, vars_severidad_s13)
+```
+
+
+```{r}
+generar_red_severidad_s13 <- function(matriz_datos, grupo_nombre) {
+  
+  # 1. Correlación y p-valores
+  mat_tetra <- psych::tetrachoric(matriz_datos)
+  rho <- mat_tetra$rho
+  n <- nrow(matriz_datos)
+  p_vals <- psych::corr.p(rho, n = n)$p
+  
+  # 2. FILTRO EQUILIBRADO
+  rho_filtrada <- rho
+  rho_filtrada[p_vals > 0.05] <- 0 
+  rho_filtrada[abs(rho_filtrada) < 0.25] <- 0  
+  
+  # 3. COLORES MANUALES
+  nombres_nodos <- colnames(rho_filtrada)
+  colores_nodos <- rep("#E0E0E0", length(nombres_nodos))
+  
+  colores_nodos[nombres_nodos %in% gravedad_vars] <- "#FFD700" # Dorado (Severidad)
+  colores_nodos[nombres_nodos %in% sint_s13]      <- "#9999FF" # Azul (S13)
+  
+  # 4. TÍTULO TÉCNICO EN INGLÉS
+  titulo_eng <- paste0("Network Analysis: Acute Severity vs S13 Symptoms\nGroup: ", grupo_nombre, 
+                       "\n(Filters: |rho| >= 0.25, p <= 0.05)")
+
+  # 5. DIBUJAR RED
+  qgraph(rho_filtrada, 
+         layout = "spring",
+         labels = nombres_nodos,
+         color = colores_nodos,
+         shape = "rectangle",
+         vsize = 4, vsize2 = 2.5,
+         label.cex = 0.9, label.font = 2,
+         posCol = "darkgreen", negCol = "darkred",
+         maximum = 1, minimum = 0.25,
+         edge.width = 1.2,
+         repulsion = 0.9,
+         title = titulo_eng,
+         mar = c(7, 5, 12, 15),
+         # Leyenda
+         groups = list("Acute Severity" = gravedad_vars, 
+                       "Symptoms S13" = sint_s13),
+         legend = TRUE,
+         legend.cex = 0.5,
+         GLratio = 2.5)
+}
+```
+
+
+```{r}
+# Exportar CASOS
+png("Network_SEVERIDAD_S13_CASOS_0'25.png", width = 3500, height = 2800, res = 300)
+generar_red_severidad_s13(matriz_casos_grav, "CASES (Long Covid)")
+dev.off()
+
+# Exportar CONTROLES
+png("Network_SEVERIDAD_S13_CONTROLES_0'25.png", width = 3500, height = 2800, res = 300)
+generar_red_severidad_s13(matriz_controles_grav, "CONTROLS")
+dev.off()
+```
+
+
+### iNTEGRADA
+
+
+```{r}
+# Combinamos todas las dimensiones del estudio
+todas_integradas <- c(comorb_vars, "hospitalizacion", "uci", "asintomatico", sint_agudo, sint_s13, sint_s1)
+
+# Creamos las matrices integradas
+matriz_casos_int <- preparar_matriz(datos_casos, todas_integradas)
+matriz_controles_int <- preparar_matriz(datos_controles, todas_integradas)
+```
+
+```{r}
+generar_red_integrada <- function(matriz_datos, grupo_nombre) {
+  
+  # 1. Correlación y p-valores
+  mat_tetra <- psych::tetrachoric(matriz_datos)
+  rho <- mat_tetra$rho
+  n <- nrow(matriz_datos)
+  p_vals <- psych::corr.p(rho, n = n)$p
+  
+  # 2. FILTRO EQUILIBRADO (0.30 para que sea una red limpia pero informativa)
+  rho_filtrada <- rho
+  rho_filtrada[p_vals > 0.05] <- 0 
+  rho_filtrada[abs(rho_filtrada) < 0.35] <- 0  
+  
+  # 3. MAPEO DE COLORES POR FAMILIAS
+  nombres_nodos <- colnames(rho_filtrada)
+  colores_nodos <- rep("#E0E0E0", length(nombres_nodos))
+  
+  colores_nodos[nombres_nodos %in% comorb_vars]   <- "#FFCC80" # Naranja (Comorb)
+  colores_nodos[nombres_nodos %in% gravedad_vars] <- "#FFD700" # Dorado (Severidad)
+  colores_nodos[nombres_nodos %in% sint_agudo]    <- "#FF9999" # Rojo (Sint. Agudos)
+  colores_nodos[nombres_nodos %in% sint_s13]      <- "#9999FF" # Azul (Sint. S13)
+  colores_nodos[nombres_nodos %in% sint_s1]      <- "#99FF99"  # Verde
+  
+  # 4. TÍTULO EN INGLÉS
+  titulo_eng <- paste0("Integrated Clinical Network: ", grupo_nombre, 
+                       "\nInteractions: Comorbidities, Severity, and Long-Term Symptoms",
+                       "\n(Filters: |rho| >= 0.30, p <= 0.05)")
+
+  # 5. DIBUJAR SUPER RED
+  qgraph(rho_filtrada, 
+         layout = "spring",
+         labels = nombres_nodos,
+         color = colores_nodos,
+         shape = "rectangle",
+         vsize = 3.5, vsize2 = 2.2,
+         label.cex = 0.8, label.font = 2,
+         posCol = "darkgreen", negCol = "darkred",
+         maximum = 1, minimum = 0.35,
+         edge.width = 1.1,
+         repulsion = 0.9,
+         title = titulo_eng,
+         mar = c(7, 5, 12, 18),
+         # Leyenda con las 4 categorías
+         groups = list("Comorbidities" = comorb_vars, 
+                       "Acute Severity" = gravedad_vars,
+                       "Acute Symptoms" = sint_agudo,
+                       "Symptoms S13" = sint_s13,
+                       "Symptoms S1"=sint_s1),
+         legend = TRUE,
+         legend.cex = 0.45,
+         GLratio = 2.5)
+}
+```
+
+
+
+
+```{r}
+# Exportar CASOS
+png("Network_INTEGRADA_CASOS.png", width = 4500, height = 3200, res = 300)
+generar_red_integrada(matriz_casos_int, "CASES (Integrated Perspective)")
+dev.off()
+
+# Exportar CONTROLES
+png("Network_INTEGRADA_CONTROLES.png", width = 4500, height = 3200, res = 300)
+generar_red_integrada(matriz_controles_int, "CONTROLS (Integrated Perspective)")
+dev.off()
+```
+
+
+## 3.3. Analisis factorial
+
+```{r}
+# Cargar librería necesaria
+library(psych)
+
+# 1. AISLAR DATOS: Solo CASOS y Solo síntomas S13
+datos_casos <- datos3[datos3$covid_persistente == 1, ]
+df_s13_casos <- datos_casos[, sint_s13]
+
+# Asegurar formato numérico (0 y 1) y limpiar NAs
+df_s13_casos <- as.data.frame(lapply(df_s13_casos, function(x) as.numeric(as.character(x))))
+df_s13_casos <- na.omit(df_s13_casos)
+
+# 2. CREAR MATRIZ TETRACÓRICA
+
+matriz_tetra_s13 <- tetrachoric(df_s13_casos)$rho
+
+# 3. ANÁLISIS PARALELO 
+set.seed(123) # Para que el resultado sea reproducible
+ap <- fa.parallel(matriz_tetra_s13, n.obs = nrow(df_s13_casos), fa = "fa", n.iter = 50,
+                  main = "Análisis Paralelo: Determinación de Factores")
+
+
+# 4. EJECUTAR EL ANÁLISIS FACTORIAL
+n_factores <- 4  
+
+afe_s13 <- fa(r = matriz_tetra_s13, nfactors = n_factores, rotate = "oblimin", fm = "minres")
+
+# 5. VER LOS RESULTADOS
+print(afe_s13$loadings, cutoff = 0.3, sort = TRUE)
+
+# 6. GRÁFICO DEL MODELO
+
+png("Analisis_Factorial_S13_Casos.png", width = 4000, height = 3400, res = 300)
+fa.diagram(afe_s13, main = "Sub-fenotipos Latentes de Long COVID (S13)")
+dev.off()
+```
+### EFA, version 2
+
+```{r}
+library(cluster)
+library(dplyr)
+library(factoextra)
+library(ggplot2)
+
+# 1. CARGA Y FILTRADO
+df_discovery <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt", header = TRUE, sep = "\t")
+nrow(df_discovery)
+df_cases <- df_discovery %>% 
+  filter(covid_persistente == 1) # Nos quedamos solo con casos
+nrow(df_cases)
+
+sint_s13 <- c("fiebre_long_s13", "vomitos_long_s13", "astenia_long_s13", "disnea_long_s13", 
+              "dolor_torax_long_s13", "tos_long_s13", "dolor_articular_long_s13", 
+              "mialgia_long_s13", "cefalea_long_s13", "diarrea_long_s13", "afonia_long_s13", 
+              "anosmia_long_s13", "disgeusia_long_s13", "Niebla_mental_s13", 
+              "insomnio_s13", "otro_long_s13")
+
+datos_EFA <- df_cases %>%
+  dplyr::select(all_of(sint_s13)) %>%
+mutate(across(everything(), ~replace_na(., 0)))
+
+# 2. CREAR MATRIZ TETRACÓRICA
+matriz_tetra_s13 <- tetrachoric(datos_EFA)$rho
+
+# 3. ANÁLISIS PARALELO (Para decidir el número de "Fenotipos/Factores")
+# Este paso justifica matemáticamente cuántos clusters existen
+set.seed(123) # Para que el resultado sea reproducible
+ap <- fa.parallel(matriz_tetra_s13, n.obs = nrow(datos_EFA), fa = "fa", n.iter = 50,
+                  main = "Análisis Paralelo: Determinación de Factores")
+
+# OJO: Al correr la línea de arriba, R te dirá algo como: 
+# "Parallel analysis suggests that the number of factors = X"
+
+# 4. EJECUTAR EL ANÁLISIS FACTORIAL
+n_factores <- 4  
+
+afe_s13 <- fa(r = matriz_tetra_s13, nfactors = n_factores, rotate = "oblimin", fm = "minres")
+
+# 5. VER LOS RESULTADOS (Las "cargas" factoriales)
+print(afe_s13$loadings, cutoff = 0.05, sort = TRUE)
+
+# 6. GRÁFICO DEL MODELO
+png("Analisis_Factorial_S13_Casos.png", width = 4000, height = 3400, res = 300)
+fa.diagram(afe_s13, main = "Sub-fenotipos Latentes de Long COVID (S13)")
+dev.off()
+```
+
+
+# 4.Asociacion 
+
+```{r}
+
+library(dplyr)
+library(purrr)
+
+# 1. Definimos los grupos de variables
+grupos <- list(
+  Demograficas = c("sexo", "edad_final", "bmi", "embarazo_diag", "tabaquismo", "seg_vacunado"),
+  Gravedad = c("hospitalizacion", "uci", "asintomatico", "num_syms_s1_real", "num_syms_s13_real"),
+  Comorbilidades = c("hipertension_arterial", "hipercolesterolemia", "diabetes", "obesidad", 
+                     "cardiopatia_isquemica", "aritmia_cardiaca", "enfermedad_cerebrovascular",
+                     "epoc", "hepatopatia", "tumor_solido", "enfermedad_renal")
+)
+
+# 2. Función para calcular el p-valor según el tipo de variable
+calcular_p_valor <- function(var_name, data) {
+  # Quitamos NAs para el test
+  temp_data <- data %>% filter(!is.na(!!sym(var_name)), !is.na(covid_persistente))
+  
+  if (is.numeric(temp_data[[var_name]])) {
+    # Si es numérica: T-test
+    res <- t.test(temp_data[[var_name]] ~ temp_data$covid_persistente)$p.value
+  } else {
+    # Si es categórica: Chi-cuadrado
+    tab <- table(temp_data[[var_name]], temp_data$covid_persistente)
+    # Usamos tryCatch por si alguna celda tiene 0 y el test falla
+    res <- tryCatch(chisq.test(tab)$p.value, error = function(e) NA)
+  }
+  return(res)
+}
+
+# 3. Ejecutar y organizar en tablas
+resultados_tablas <- map(grupos, function(lista) {
+  data.frame(
+    Variable = lista,
+    P_Valor = sapply(lista, calcular_p_valor, data = datos3)
+  ) %>%
+    mutate(Significativo = ifelse(P_Valor < 0.05, "SÍ", "no"))
+})
+
+# 4. Ver los resultados
+print(resultados_tablas$Demograficas)
+print(resultados_tablas$Gravedad)
+print(resultados_tablas$Comorbilidades)
+```
+
