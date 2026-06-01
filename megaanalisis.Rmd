@@ -1,0 +1,1201 @@
+---
+title: "GWAS_GLOBAL"
+author: "sara sanchez"
+date: "2026-04-28"
+output: html_document
+---
+# 1. MEGAANALISIS
+
+## 1.1.Unificamos las clinicas... solo hace 1 vez
+```{r}
+df_clinica_disc <- read_tsv("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt") %>%
+  rename(BATCH = BATCH.y) %>%
+  mutate(edad_sq = edad_final^2)
+path_clinica <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt"
+path_genetica_base <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+path_lista_snps <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/17_SNPs_para_extraer.txt"
+
+# 1. Cargar Base de Datos Clínica
+df_clinica <- read_tsv(path_clinica)
+
+# Estandarizar Discovery
+df_disc_clean <- df_clinica_disc %>%
+  rename(
+    long_covid = covid_persistente,
+    obesidad =Obesidad, 
+    cardiopatia = Cardiopatia_isquemica,
+    edad2=edad_sq,
+    edad_sexo=sexo_edad,
+    COHORTE=BATCH
+  ) %>% 
+  select(FID, IID, long_covid, sexo, edad_final,edad2, edad_sexo, tabaquismo, uci, asintomatico, Diabetes, obesidad, EPOC,cardiopatia, COHORTE)
+
+# Estandarizar Validación
+df_valid_clean <- df_clinica %>%
+  rename(
+    # Cambiamos heart_disease al nombre estándar
+    cardiopatia = heart_disease
+  ) %>%
+  mutate(COHORTE = 3) %>%
+  # Asegúrate de que los nombres coincidan (ej: heart_disease vs Cardiopatia)
+  select(FID, IID, long_covid, sexo, edad_final,edad2, edad_sexo, tabaquismo, uci, asintomatico, Diabetes, obesidad, EPOC,cardiopatia, COHORTE)
+
+# Unir
+df_clinica_total <- bind_rows(df_disc_clean, df_valid_clean)
+write_tsv(df_clinica_total, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/clinica_unificada.txt")
+```
+
+```{r}
+head(df_clinica_total)
+# Preparamos las covariables desde tu clínica unificada
+df_confusoras <- df_clinica_total %>%
+  mutate(COHORTE = as.numeric(as.factor(COHORTE))) %>%
+  # Seleccionamos las variables (asegúrate de que todas sean 0/1 o continuas)
+  select(FID, IID,long_covid, sexo, edad_final,edad2, edad_sexo, COHORTE) %>%
+  # PLINK no tolera NAs en las covariables, así que filtramos
+  na.omit()
+
+write.table(df_confusoras, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/confusoras.txt", 
+            row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t")
+```
+
+
+## 1.2. Nos quedamos con la genetica unificada
+```{r}
+path_unificado <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+plink_exe <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+```
+
+
+## 1.3.Corremos GWAS con confusoras
+
+EN plink
+
+  
+  "C:\Users\ssanchezo\Downloads\plink_win64_20250819\plink.exe" ^
+ --bfile "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\Genotipo x chromosomas\DiscoveryMasValidacion\DiscoveryMasValidacion_maf_01" ^
+--1 ^
+ --logistic hide-covar ^
+ --pheno "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\MEGANALISIS\confusoras.txt" ^
+ --pheno-name long_covid ^
+ --covar "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\MEGANALISIS\confusoras.txt" ^
+ --covar-name sexo,edad_final,edad2,COHORTE,edad_sexo ^
+ --ci 0.95 ^
+ --allow-no-sex ^
+ --out "R:\Human_Genotyping-CEGEN\Backup\Personales\Sara\LongCovid\EUROPEOS\MEGANALISIS\GWAS_confusoras"
+
+
+## 1.4.Sacamos top SNPS
+```{r}
+library(data.table)
+
+# Cargamos resultados (usamos fread porque puede ser un archivo grande)
+resultados_gwas <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/GWAS_confusoras.assoc.logistic")
+
+top_snps_mega_11 <- resultados_gwas %>%
+  filter(TEST == "ADD") %>%
+  arrange(P)
+
+# Ver los 20 mejores
+head(top_snps_mega_11, 11)
+```
+
+
+####MAF
+```{r}
+library(data.table)
+resultados_gwas <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/GWAS_confusoras.assoc.logistic")
+
+top_snps_mega_11 <- resultados_gwas %>%
+  filter(TEST == "ADD") %>%
+  arrange(P)
+
+# Ver los 20 mejores
+head(top_snps_mega_11, 11)
+# 1. Guardamos la lista de tus 11 mejores SNPs en un txt para PLINK
+write.table(top_snps_mega_11$SNP, "top_11_snps.txt", 
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# 2. Ejecutamos PLINK para calcular la frecuencia de esos 11
+system(paste0(plink_path, 
+              " --bfile \"", path_genetica_base, "\"",
+              " --extract top_11_snps.txt",
+              " --freq --out frecuencias_top11"))
+
+# 3. Leemos el resultado en R
+maf_calculado <- fread("frecuencias_top11.frq")
+
+# 4. Lo combinamos con tus resultados de P-valor
+library(dplyr)
+top_final <- top_snps_mega_11 %>%
+  left_join(maf_calculado %>% dplyr::select(SNP, MAF, A1, A2), by = "SNP")
+top_final
+print(top_final)
+```
+
+## 1.5.Gardamos ifno de esos top 45 SNPS
+```{r}
+# 1. Obtener la lista de los nombres de los 45 mejores SNPs
+top_11_list <- top_snps_mega_11$SNP[1:11]
+write.table(top_11_list, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/top_11_snps_GWAS.txt", 
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# 2. Extraer genotipos en formato .raw (0, 1, 2)
+# Usamos --recode AD para que R entienda la aditividad
+path_unificado <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+plink_exe <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+
+system(paste0(plink_exe, 
+              " --bfile \"", path_unificado, "\"",
+              " --extract \"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/top_11_snps_GWAS.txt\"",
+              " --recode A --out \"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/bbdd_genotipos_top11\""))
+```
+
+
+## 1.6.Modelo final 
+```{r}
+library(dplyr)
+library(readr)
+library(broom)
+
+# 1. Cargar 
+df_clinica <- read_tsv("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/clinica_unificada.txt")
+
+# 2. Cargar Genotipos extraídos
+df_geno_top11 <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/bbdd_genotipos_top11.raw", 
+                            header = TRUE, check.names = FALSE)
+
+# Limpiar nombres de SNPs (quitar ":" y "-") para que la fórmula de R no de error
+names(df_geno_top11) <- gsub(":", "_", names(df_geno_top11))
+names(df_geno_top11) <- gsub("-", "_", names(df_geno_top11))
+
+head(df_geno_top11)
+
+# Nos quedamos con FID y los SNPs
+df_geno_clean_11 <- df_geno_top11 %>% select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 3. Unir por FID 
+# Nota: Verifica si en df_clinica la columna se llama 'FID' o 'ID'
+df_final_model_11 <- inner_join(df_clinica, df_geno_clean_11, by = "FID")
+
+# 4. Definir variables del modelo
+vars_clinicas <- c("sexo", "edad_final", "edad2", "edad_sexo", "tabaquismo", 
+                   "uci", "asintomatico", "Diabetes", "obesidad", "EPOC", "cardiopatia", "COHORTE")
+
+# Seleccionar automáticamente todas las columnas de SNPs (las que terminan en _A, _G, _C, _T)
+vars_snps <- setdiff(names(df_geno_clean_11), "FID")
+
+# Limpiar NAs para que el modelo corra sobre los mismos individuos
+df_final_model_11 <- df_final_model_11 %>%
+  select(long_covid, all_of(vars_clinicas), all_of(vars_snps)) %>%
+  na.omit()
+
+# 5. Crear la fórmula y ejecutar GLM
+formula_mega_11 <- as.formula(
+  paste("long_covid ~", paste(c(vars_clinicas, vars_snps), collapse = " + "))
+)
+
+modelo_final_11 <- glm(formula_mega_11, data = df_final_model_11, family = binomial)
+
+# 6. Obtener resultados con Odds Ratios
+resultados_finales_11 <- tidy(modelo_final_11, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(p.value)
+
+# Guardar resultados
+write_csv(resultados_finales_11, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/RESULTADOS_MODELO_regre_TOP11+clinic.csv")
+
+# Ver top 20 del modelo multivariante
+head(resultados_finales_11, 20)
+```
+
+
+
+## 1.7. Modelo final pero con train y test
+
+```{r}
+library(dplyr)
+library(readr)
+library(broom)
+library(pROC) # ¡Nuevo! Necesario para ver la capacidad predictiva (AUC)
+
+# 1. Cargar Clínica Unificada
+df_clinica <- read_tsv("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/clinica_unificada.txt")
+
+# 2. Cargar Genotipos extraídos
+df_geno_top11 <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/bbdd_genotipos_top11.raw", 
+                            header = TRUE, check.names = FALSE)
+
+# Limpiar nombres de SNPs
+names(df_geno_top11) <- gsub(":", "_", names(df_geno_top11))
+names(df_geno_top11) <- gsub("-", "_", names(df_geno_top11))
+
+# Nos quedamos con FID y los SNPs
+df_geno_clean_11 <- df_geno_top11 %>% select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 3. Unir por FID
+df_final_model_11 <- inner_join(df_clinica, df_geno_clean_11, by = "FID")
+
+# 4. Definir variables y limpiar NAs
+vars_clinicas <- c("sexo", "edad_final", "edad2", "edad_sexo", "tabaquismo", 
+                   "uci", "asintomatico", "Diabetes", "obesidad", "EPOC", "cardiopatia", "COHORTE")
+
+vars_snps <- setdiff(names(df_geno_clean_11), "FID")
+
+df_final_model_11 <- df_final_model_11 %>%
+  select(long_covid, all_of(vars_clinicas), all_of(vars_snps)) %>%
+  na.omit()
+
+
+set.seed(1234) 
+
+# Creamos un índice aleatorio para seleccionar el 70% de las filas
+indice_train <- sample(1:nrow(df_final_model_11), size = 0.7 * nrow(df_final_model_11))
+
+# Dividimos el dataframe
+train_data <- df_final_model_11[indice_train, ]
+test_data  <- df_final_model_11[-indice_train, ]
+
+print(paste("Pacientes para entrenar:", nrow(train_data)))
+print(paste("Pacientes para validar (test):", nrow(test_data)))
+
+# 5. Crear la fórmula y ejecutar GLM SOLO EN TRAIN
+formula_mega_11 <- as.formula(
+  paste("long_covid ~", paste(c(vars_clinicas, vars_snps), collapse = " + "))
+)
+
+modelo_train_11 <- glm(formula_mega_11, data = train_data, family = binomial)
+
+# 6. Obtener y guardar resultados (Odds Ratios del entrenamiento)
+resultados_train_11 <- tidy(modelo_train_11, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(p.value)
+
+write_csv(resultados_train_11, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/RESULTADOS_MODELO_TRAIN_TOP11.csv")
+
+
+# Hacemos que el modelo entrenado prediga el riesgo en los pacientes de Test
+predicciones_prob <- predict(modelo_train_11, newdata = test_data, type = "response")
+
+# Asumimos que si la probabilidad > 0.5, el modelo predice Long Covid (1)
+predicciones_clase <- ifelse(predicciones_prob > 0.5, 1, 0)
+
+# Matriz de Confusión (para ver aciertos y errores)
+cat("\n--- MATRIZ DE CONFUSIÓN (en Test) ---\n")
+matriz_confusion <- table(Prediccion = predicciones_clase, Realidad = test_data$long_covid)
+print(matriz_confusion)
+
+# Calcular el AUC (Área Bajo la Curva)
+curva_roc <- roc(test_data$long_covid, predicciones_prob, quiet = TRUE)
+cat("\n--- RENDIMIENTO PREDICTIVO ---\n")
+print(paste("AUC del modelo:", round(auc(curva_roc), 4)))
+# ----
+# 6. OBTENER TABLA COMPLETA: ESTIMATE (BETA), OR E INTERVALOS
+# -------------------------------------------------------------------
+# A. Sacamos los coeficientes crudos (Estimate) y el p-valor
+resultados_raw <- tidy(modelo_train_11, exponentiate = FALSE) %>%
+  select(term, estimate, p.value) %>%
+  rename(Variable = term, Estimate = estimate, P_valor = p.value)
+
+# B. Sacamos los Odds Ratios (OR) y los Intervalos de Confianza (IC)
+resultados_or <- tidy(modelo_train_11, conf.int = TRUE, exponentiate = TRUE) %>%
+  select(term, estimate, conf.low, conf.high) %>%
+  rename(Variable = term, OR = estimate, IC_Inferior = conf.low, IC_Superior = conf.high)
+
+# C. Unimos todo en una tabla final bonita y redondeamos a 4 decimales
+tabla_final_completa <- inner_join(resultados_raw, resultados_or, by = "Variable") %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(P_valor) # Ordenamos de más a menos significativo
+tabla_final_completa
+# Guardamos la tabla
+#write_csv(tabla_final_completa, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/TABLA_COMPLETA_MODELO_TOP11.csv")
+
+# Ver los primeros resultados en consola
+cat("\n--- TABLA DE VARIABLES (Top 15) ---\n")
+print(head(tabla_final_completa, 15))
+
+
+# Predicciones
+predicciones_prob <- predict(modelo_train_11, newdata = test_data, type = "response")
+predicciones_clase <- ifelse(predicciones_prob > 0.5, 1, 0)
+
+# Matriz de Confusión
+cat("\n--- MATRIZ DE CONFUSIÓN (en Test) ---\n")
+matriz_confusion <- table(Prediccion = predicciones_clase, Realidad = test_data$long_covid)
+print(matriz_confusion)
+
+# Calcular el AUC
+curva_roc <- roc(test_data$long_covid, predicciones_prob, quiet = TRUE)
+valor_auc <- round(auc(curva_roc), 4)
+
+cat("\n--- RENDIMIENTO PREDICTIVO ---\n")
+print(paste("AUC del modelo:", valor_auc))
+
+# Dibujar y guardar el gráfico de la curva ROC
+png("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/Curva_ROC_Modelo11.png", 
+    width = 2000, height = 2000, res = 300) # Alta calidad para publicaciones
+
+plot(curva_roc, 
+     main = paste("Curva ROC - Modelo Multivariante\n(AUC =", valor_auc, ")"),
+     col = "#2E9FDF", # Color azul bonito
+     lwd = 3,         # Grosor de la línea
+     legacy.axes = TRUE, # Pone "1 - Especificidad" en el eje X, que es el formato estándar
+     print.auc = FALSE)  # Lo ponemos en FALSE porque ya lo hemos incluido en el título (main)
+
+# Añadimos una cuadrícula de fondo para que se vea más profesional
+grid(col = "lightgray", lty = "dotted")
+
+dev.off() # Cerramos el dispositivo gráfico para que el archivo se guarde correctamente
+```
+
+### mODLEO DE SOLO SNPS 
+```{r}
+library(broom)
+library(dplyr)
+
+# Creamos una tabla vacía para guardar los resultados
+resultados_replicacion_gwas <- data.frame()
+
+# Hacemos un bucle: 1 modelo para CADA SNP por separado
+for (snp_actual in vars_snps) {
+  
+  # Fórmula: long_covid ~ SNP_actual + sexo + edad_final + ... + COHORTE
+  formula_univariante <- as.formula(
+    paste("long_covid ~", snp_actual, "+", paste(vars_clinicas, collapse = " + "))
+  )
+  
+  # Ejecutamos el modelo
+  modelo_temp <- glm(formula_univariante, data = df_final_model_11, family = binomial)
+  
+  # Extraemos solo la fila correspondiente al SNP que estamos analizando
+  res_temp <- tidy(modelo_temp, exponentiate = TRUE) %>%
+    filter(term == snp_actual) %>%
+    select(term, estimate, p.value) %>%
+    rename(Variable = term, OR = estimate, P_valor = p.value)
+  
+  # Guardamos el resultado
+  resultados_replicacion_gwas <- bind_rows(resultados_replicacion_gwas, res_temp)
+}
+
+# Redondeamos y ordenamos por P-valor
+resultados_replicacion_gwas <- resultados_replicacion_gwas %>%
+  mutate(across(where(is.numeric), ~ signif(.x, 4))) %>% # Usamos signif para ver bien los p-valores muy bajos
+  arrange(P_valor)
+
+cat("\n--- RESULTADOS: REPLICACIÓN DEL GWAS SNP a SNP ---\n")
+print(resultados_replicacion_gwas)
+```
+
+
+# 2.Metaanlisis CON BASE TOP 17 DE DISCOVERY 
+```{r}
+# 1. Cargar librerías
+library(data.table)
+library(dplyr)
+library(meta) 
+
+# 2. Cargar los resultados de ambos GWAS (solo la prueba aditiva)
+gwas_disc <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic") %>% 
+  filter(TEST == "ADD")
+
+gwas_val <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/GWAS_VALIDA_AJUSTADO_CONFUSORAS.assoc.logistic") %>% 
+  filter(TEST == "ADD")
+
+# 3. Cargar tu lista de Top SNPs (ej. los 11 que sacaste en el meganálisis)
+# Cambia el nombre del archivo si en lugar del top 11 quieres el de los 45
+top_snps <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/17_SNPs_para_extraer.txt", header = FALSE)$V1
+
+# 4. Filtrar ambos GWAS por tus SNPs estrella y preparar las columnas
+disc_filt <- gwas_disc %>% 
+  filter(SNP %in% top_snps) %>% 
+  select(SNP, A1, OR, SE, P) %>% 
+  rename(A1_disc = A1, OR_disc = OR, SE_disc = SE, P_disc = P)
+
+val_filt <- gwas_val %>% 
+  filter(SNP %in% top_snps) %>% 
+  select(SNP, A1, OR, SE, P) %>% 
+  rename(A1_val = A1, OR_val = OR, SE_val = SE, P_val = P)
+
+# 5. Unir los datos
+meta_df <- inner_join(disc_filt, val_filt, by = "SNP")
+
+# Verificación de seguridad: Asegurarnos de que el alelo contado es el mismo
+print(paste("¿Coinciden todos los alelos A1?:", all(meta_df$A1_disc == meta_df$A1_val)))
+
+# 6. Bucle para hacer el metaanálisis SNP a SNP
+resultados_meta <- data.frame()
+
+for(i in 1:nrow(meta_df)){
+  
+  snp_actual <- meta_df$SNP[i]
+  
+  # El paquete 'meta' trabaja con log(OR) para mantener la simetría estadística
+  logOR_disc <- log(meta_df$OR_disc[i])
+  logOR_val  <- log(meta_df$OR_val[i])
+  
+  se_disc <- meta_df$SE_disc[i]
+  se_val  <- meta_df$SE_val[i]
+  
+  # Ejecutar metaanálisis combinando ambos
+  m <- metagen(TE = c(logOR_disc, logOR_val),
+               seTE = c(se_disc, se_val),
+               studlab = c("Discovery", "Validacion"),
+               sm = "OR") 
+  
+  # Extraer y guardar los resultados del modelo de efectos fijos
+  res <- data.frame(
+    SNP = snp_actual,
+    Alelo = meta_df$A1_disc[i],
+    OR_Discovery = meta_df$OR_disc[i],
+    OR_Validacion = meta_df$OR_val[i],
+    OR_Meta = exp(m$TE.fixed),   # Deshacemos el logaritmo
+    P_Meta = m$pval.fixed,
+    Heterogeneidad_I2 = m$I2     # Qué tanto difieren las cohortes entre sí
+  )
+  
+  resultados_meta <- rbind(resultados_meta, res)
+}
+
+# 7. Ordenar por el P-valor combinado y ver los mejores
+resultados_meta <- resultados_meta %>% arrange(P_Meta)
+
+# Guardar la tabla final
+write_csv(resultados_meta, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/Resultados_Metaanalisis.csv")
+
+print(head(resultados_meta, 11))
+```
+
+## TaBLA resumen final
+
+```{r}
+library(dplyr)
+library(data.table)
+
+# =========================================================
+# 1. CARGAR DATOS
+# =========================================================
+
+df_disc <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic")
+
+df_val <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/GWAS_VALIDA_AJUSTADO_CONFUSORAS.assoc.logistic")
+
+df_meta <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/Metanalisis_de_valYdiscCRUDOS.csv")
+
+df_mega <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/GWAS_confusoras.assoc.logistic")
+
+
+# =========================================================
+# 2. FILTRAR TEST == "ADD"
+# =========================================================
+
+df_disc <- df_disc %>%
+  filter(TEST == "ADD")
+
+df_val <- df_val %>%
+  filter(TEST == "ADD")
+
+df_mega <- df_mega %>%
+  filter(TEST == "ADD")
+
+
+# =========================================================
+# 3. TOP 12 DE CADA ANÁLISIS
+# =========================================================
+
+top_disc <- df_disc %>%
+  arrange(P) %>%
+  slice(1:12) %>%
+  mutate(Procedencia = "TOP_DISCOVERY")
+
+top_val <- df_val %>%
+  arrange(P) %>%
+  slice(1:12) %>%
+  mutate(Procedencia = "TOP_VALIDACION")
+
+top_meta <- df_meta %>%
+  arrange(p_meta) %>%
+  slice(1:12) %>%
+  mutate(Procedencia = "TOP_METANALISIS")
+
+top_mega <- df_mega %>%
+  arrange(P) %>%
+  slice(1:12) %>%
+  mutate(Procedencia = "TOP_MEGAANALISIS")
+
+
+# =========================================================
+# 4. UNIR TODOS LOS SNPS TOP
+# =========================================================
+
+snps_top <- bind_rows(
+  
+  top_disc %>% 
+    dplyr::select(SNP, Procedencia) %>%
+    mutate(
+      SNP = as.character(SNP),
+      Procedencia = as.character(Procedencia)
+    ),
+
+  top_val %>% 
+    dplyr::select(SNP, Procedencia) %>%
+    mutate(
+      SNP = as.character(SNP),
+      Procedencia = as.character(Procedencia)
+    ),
+
+  top_meta %>% 
+    dplyr::select(SNP, Procedencia) %>%
+    mutate(
+      SNP = as.character(SNP),
+      Procedencia = as.character(Procedencia)
+    ),
+
+  top_mega %>% 
+    dplyr::select(SNP, Procedencia) %>%
+    mutate(
+      SNP = as.character(SNP),
+      Procedencia = as.character(Procedencia)
+    )
+
+) %>%
+  distinct()
+
+# =========================================================
+# 5. INFORMACIÓN DISCOVERY
+# =========================================================
+
+disc_info <- df_disc %>%
+  dplyr::select(
+    SNP,
+    OR_discovery = OR,
+    P_discovery = P,
+    L95_discovery = L95,
+    U95_discovery = U95
+  ) %>%
+  mutate(
+    IC_discovery = paste0(
+      round(L95_discovery, 3),
+      " - ",
+      round(U95_discovery, 3)
+    )
+  ) %>%
+  dplyr::select(-L95_discovery, -U95_discovery)
+
+
+# =========================================================
+# 6. INFORMACIÓN VALIDACIÓN
+# =========================================================
+
+val_info <- df_val %>%
+  dplyr::select(
+    SNP,
+    OR_val = OR,
+    P_val = P,
+    L95_val = L95,
+    U95_val = U95
+  ) %>%
+  mutate(
+    IC_val = paste0(
+      round(L95_val, 3),
+      " - ",
+      round(U95_val, 3)
+    )
+  ) %>%
+  dplyr::select(-L95_val, -U95_val)
+
+
+# =========================================================
+# 7. INFORMACIÓN METANÁLISIS
+# =========================================================
+
+meta_info <- df_meta %>%
+  dplyr::select(
+    SNP,
+    OR_meta,
+    P_meta = p_meta
+  )
+
+
+# =========================================================
+# 8. INFORMACIÓN MEGAANÁLISIS
+# =========================================================
+
+mega_info <- df_mega %>%
+  dplyr::select(
+    SNP,
+    OR_mega = OR,
+    P_mega = P,
+    L95_mega = L95,
+    U95_mega = U95
+  ) %>%
+  mutate(
+    IC_mega = paste0(
+      round(L95_mega, 3),
+      " - ",
+      round(U95_mega, 3)
+    )
+  ) %>%
+  dplyr::select(-L95_mega, -U95_mega)
+
+
+# =========================================================
+# 9. TABLA FINAL
+# =========================================================
+
+tabla_final <- snps_top %>%
+  left_join(disc_info, by = "SNP") %>%
+  left_join(val_info, by = "SNP") %>%
+  left_join(meta_info, by = "SNP") %>%
+  left_join(mega_info, by = "SNP") %>%
+  dplyr::select(
+    Procedencia,
+    SNP,
+    
+    OR_discovery,
+    OR_val,
+    OR_meta,
+    OR_mega,
+    
+    P_discovery,
+    P_val,
+    P_meta,
+    P_mega,
+    
+    IC_discovery,
+    IC_val,
+    IC_mega
+  ) %>%
+
+
+
+# =========================================================
+# 10. VER Y GUARDAR
+# =========================================================
+
+print(tabla_final)
+
+write.csv(
+  tabla_final,
+  "TOP12_SNPs_COMPARACION.csv",
+  row.names = FALSE
+)
+
+str(top_disc)
+str(top_val)
+str(top_meta)
+str(top_mega)
+```
+
+
+
+
+
+##Tabla final
+
+
+```{r}
+# =========================================================
+# 1. CARGAR DATOS
+# =========================================================
+
+df_disc <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic")
+
+df_val <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/GWAS_VALIDA_AJUSTADO_CONFUSORAS.assoc.logistic")
+
+df_meta <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/Metanalisis_de_valYdiscCRUDOS.csv")
+
+df_mega <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/GWAS_confusoras.assoc.logistic")
+
+
+# =========================================================
+# 2. FILTRAR TEST == "ADD"
+# =========================================================
+
+df_disc <- df_disc %>%
+  filter(TEST == "ADD")
+
+df_val <- df_val %>%
+  filter(TEST == "ADD")
+
+df_mega <- df_mega %>%
+  filter(TEST == "ADD")
+
+# =========================================================
+# [NUEVO] 3. PREPARAR Y LIMPIAR LAS MATRICES COMPLETAS
+# =========================================================
+# Aseguramos nombres limpios antes del merge para evitar duplicaciones
+
+disc_clean <- df_disc %>%
+  dplyr::select(SNP, CHR, BP, A1, OR_disc = OR, P_disc = P, L95_disc = L95, U95_disc = U95)
+
+val_clean <- df_val %>%
+  dplyr::select(SNP, OR_val = OR, P_val = P, L95_val = L95, U95_val = U95)
+
+meta_clean <- df_meta %>%
+  dplyr::select(SNP, OR_meta, P_meta = p_meta)
+
+mega_clean <- df_mega %>%
+  dplyr::select(SNP, OR_mega = OR, P_mega = P, L95_mega = L95, U95_mega = U95)
+
+# =========================================================
+# [NUEVO] 4. MASTER MERGE (Unión de TODA la información)
+# =========================================================
+# Unimos por SNP usando left_join consecutivas para no perder datos
+
+df_master <- disc_clean %>%
+  inner_join(val_clean, by = "SNP") %>%  # Requisito: que esté en ambas cohortes
+  left_join(meta_clean, by = "SNP") %>%
+  left_join(mega_clean, by = "SNP")
+
+# =========================================================
+# 5. APLICAR FILTROS CLÍNICOS Y ESTADÍSTICOS (QUERY)
+# =========================================================
+
+snps_finalistas <- df_master %>%
+  # --- CONDICIÓN 1: Consistencia Direccional Estricta y Exclusión de Cromosoma ---
+  filter(
+    ((OR_disc > 1 & OR_val > 1) | (OR_disc < 1 & OR_val < 1)) & 
+    CHR != 22 & CHR != "22" & CHR != "chr22"
+  ) %>%
+  
+  # --- EVALUAR ETIQUETAS Y MOTIVOS DE INCLUSIÓN (Sin Meta) ---
+  mutate(
+    es_Disc_sign = (P_disc < 5e-6 & P_val < 0.05) | (P_val < 5e-6 & P_disc < 0.05),
+    es_Mega_sign = (P_mega < 1e-6),
+    
+    # Criterio clínico: P_mega < 1e-5 Y efecto grande constante (>1.5 o <0.6)
+    es_Mega_aceptable_OR_alto = (P_mega < 1e-5) & 
+                                (OR_mega > 1.5 | OR_mega < 0.6) &
+                                (OR_disc > 1.5 | OR_disc < 0.6) &
+                                (OR_val > 1.5  | OR_val < 0.6)
+  ) %>%
+  
+  # --- CONDICIÓN 2: Filtrado por los motivos aprobados ---
+  filter(es_Disc_sign | es_Mega_sign | es_Mega_aceptable_OR_alto) %>%
+  
+  # --- ASIGNAR EL MOTIVO FINAL ---
+  mutate(
+    Motivo_Inclusion = case_when(
+      es_Disc_sign ~ "Disc_sign",
+      es_Mega_sign ~ "Mega_sign",
+      es_Mega_aceptable_OR_alto ~ "Mega_aceptable_OR_alto",
+      TRUE ~ "Otro"
+    )
+  ) %>%
+
+  # --- FORMATEO FINAL DE LA TABLA ---
+  mutate(
+    Clasificacion_Efecto = ifelse(OR_disc > 1, "Riesgo", "Protector"),
+    IC_disc = paste0("[", round(L95_disc, 2), "-", round(U95_disc, 2), "]"),
+    IC_val  = paste0("[", round(L95_val, 2),  "-", round(U95_val, 2),  "]"),
+    IC_mega = paste0("[", round(L95_mega, 2), "-", round(U95_mega, 2), "]")
+  ) %>%
+  dplyr::select(
+    SNP, CHR, BP, Clasificacion_Efecto, Motivo_Inclusion,
+    OR_disc, P_disc, IC_disc,
+    OR_val, P_val, IC_val,
+    OR_mega, P_mega, IC_mega
+  ) %>%
+  # --- ORDENAR STRICTAMENTE POR P-VALOR DE MEGA ---
+  arrange(P_mega)
+
+snps_finalistas
+
+# 6. GUARDAR RESULTADOS
+# =========================================================
+fwrite(snps_finalistas, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/SNPS_FINALISTAS_GLOBAL_LC.csv")
+```
+
+## mNAHTTAN 
+
+```{r}
+install.packages("qqman")
+library(qqman)
+library(data.table) # Para cargar rápido los datos
+
+
+# 1. Cargar tus datos
+data_for_plot <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/SNPS_FINALISTAS_GLOBAL_LC.csv")
+
+# Si en tu archivo CSV se llama P_mega (con minúscula o mayúscula), la asignamos a P:
+data_for_plot$P <- data_for_plot$P_mega 
+
+# 2. Asegurar que CHR sea numérico
+data_for_plot$CHR <- as.numeric(gsub("chr", "", as.character(data_for_plot$CHR)))
+
+# 3. Eliminar filas con NA en las columnas que usará qqman (ahora incluyendo la nueva 'P')
+data_for_plot <- na.omit(data_for_plot, cols = c("SNP", "CHR", "BP", "P"))
+
+
+# =====================================================================
+# GENERAR EL GRÁFICO CORREGIDO
+# =====================================================================
+#png("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Manhattan_MegaAnalysis.png", 
+ #   width = 3600, height = 1800, res = 300)
+
+manhattan(
+  data_for_plot,
+  chr = "CHR",            
+  bp = "BP",              
+  p = "P",                    # <- AQUÍ: El argumento interno de la función DEBE SER 'p' a secas
+  snp = "SNP",            
+  col = c("blue4", "orange3"), 
+  suggestiveline = -log10(1e-5), 
+  genomewideline = -log10(1e-6), 
+  main = "Genome-Wide Association Study - Mega-Analysis (N=2,244)" 
+)
+
+dev.off()
+```
+
+
+```{r}
+
+
+# 1. Instalar y cargar librerías necesarias
+# install.packages(c("data.table", "tidyverse"))
+library(data.table)
+library(tidyverse) # Carga ggplot2 y dplyr
+
+# ==============================================================================
+# Cargar el archivo pool del mega-análisis unificado de individuos (N=2244)
+df <- data_for_plot <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/SNPS_FINALISTAS_GLOBAL_LC.csv")
+
+# 3. Filtrado y limpieza estricta (Mismo procedimiento que GWAS general)
+
+# Asegurar CHR numérico y sin "chr"
+df$CHR <- as.numeric(gsub("chr", "", as.character(df$CHR)))
+# Eliminar NAs en columnas críticas
+df <- na.omit(df, cols = c("SNP", "CHR", "BP", "P_mega"))
+df$P <- df$P_mega 
+# ==============================================================================
+# 4. CALCULAR POSICIONES FÍSICAS ACUMULADAS (Criterio: Proporcionalidad Real)
+
+
+gwas_data <- df %>%
+  group_by(CHR) %>%
+  summarise(chr_len = max(BP, na.rm = TRUE)) %>% # Calcular longitud de cada CHR
+  mutate(tot_bp = cumsum(as.numeric(chr_len)) - as.numeric(chr_len)) %>% # Inicio acumulado
+  select(-chr_len) %>%
+  left_join(df, ., by = "CHR") %>%
+  # Calcular posición acumulada para cada SNP
+  mutate(BPcum = as.numeric(BP) + tot_bp)
+
+# 5. Preparar las etiquetas de los cromosomas para el eje X
+axis_set <- gwas_data %>%
+  group_by(CHR) %>%
+  summarize(center = mean(BPcum, na.rm = TRUE)) %>%
+
+  mutate(CHR_label = ifelse(CHR %in% c(1,3,5,7,9,11,13,15,17,19,21,22), as.character(CHR), ""))
+
+# ==============================================================================
+# 6. GENERAR Y GUARDAR EL GRÁFICO PROFESIONAL
+# ==============================================================================
+#png("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Manhattan_MegaAnalysis_Proporcional.png", 
+ #   width = 4000, height = 2000, res = 300) # Alta resolución (300 dpi)
+
+ggplot(gwas_data, aes(x = BPcum, y = -log10(P), color = as.factor(CHR))) +
+  # --- Dibujar los SNPs como puntos ---
+  geom_point(alpha = 0.75, size = 1.0) +
+  
+  # --- Criterios de Color ---
+  # Colores alternos profesionales para los cromosomas (Criterio: Disposición Estructural)
+  scale_color_manual(values = rep(c("#1F77B4", "#FF7F0E"), 22)) +
+  
+  # --- Criterios del Eje X (Proporcionalidad Genómica) ---
+  scale_x_continuous(label = axis_set$CHR_label, breaks = axis_set$center) +
+  
+  # --- Criterios del Eje Y (Fuerza Estadística) ---
+  # Ajustamos el límite superior para que tus picos fuertes de 10^-8/9 entren bien
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 10)) + 
+  
+  # --- Criterios de Líneas de Umbral 
+  # Umbral sugestivo (Línea discontinua azul, Criterio: Probabilidad nominal)
+  geom_hline(yintercept = -log10(1e-5), color = "#4682B4", linetype = "dashed", size = 0.7) +
+  # Umbral estricto Mega (Línea continua roja, Criterio: Consolidación biológica)
+  geom_hline(yintercept = -log10(1e-6), color = "#CD5C5C", size = 0.9) +
+  
+  # --- Criterios de Estilo y Etiquetas ---
+  theme_minimal() +
+  theme(
+    legend.position = "none", # Quitar la leyenda de cromosomas
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(), # Quitar rejilla vertical para no amontonar
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_text(size = 11, vjust = 0.5),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 14, face = "bold"),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+  ) +
+  labs(
+    title = "Genome-Wide Association Study - Mega-Analysis (N=2,244)",
+    x = "Genomic Position (Physical distance in bp)",
+    y = expression(-bold(log)[bold(10)]*(bold(P)))
+  )
+
+```
+
+
+```{r}
+# ==============================================================================
+# MANHATTAN PLOT PERFECTO CON ARCHIVO DE SNPS FINALISTAS 
+# ==============================================================================
+
+library(data.table)
+library(tidyverse)
+
+# 1. Cargar el archivo de tus SNPs elegidos
+df_finalistas <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/SNPS_FINALISTAS_GLOBAL_LC.csv")
+
+# Mapear p-valor y limpiar cromosoma
+df_finalistas$P <- df_finalistas$P_mega 
+df_finalistas$CHR <- as.numeric(gsub("chr", "", as.character(df_finalistas$CHR)))
+df_finalistas <- na.omit(df_finalistas, cols = c("SNP", "CHR", "BP", "P"))
+
+# ==============================================================================
+# CONFIGURACIÓN GENÓMICA ANCHOR (Coordenadas Reales del Genoma Humano hg19)
+# ==============================================================================
+# Fijamos las longitudes máximas oficiales de cada cromosoma para que las distancias
+# y proporciones en el eje X queden perfectas, aunque falten SNPs intermedios.
+
+hg19_lengths <- data.frame(
+  CHR = 1:22,
+  chr_len = c(249250621, 243199373, 198022430, 191154276, 180915260, 171115067, 
+              159138663, 146364022, 141213431, 135534747, 135006516, 133851895, 
+              115169878, 107349540, 102531392, 90354753,  81195210,  78077248, 
+              59128983,  63025520,  48129895,  51304566)
+) %>%
+  mutate(tot_bp = cumsum(as.numeric(chr_len)) - as.numeric(chr_len))
+
+# Fusionamos tus datos con las coordenadas genómicas reales fijas
+gwas_data <- df_finalistas %>%
+  filter(CHR >= 1 & CHR <= 22) %>%
+  left_join(hg19_lengths, by = "CHR") %>%
+  mutate(BPcum = as.numeric(BP) + tot_bp)
+
+# Calcular el centro exacto de cada cromosoma humano en el eje X
+axis_set <- hg19_lengths %>%
+  mutate(center = tot_bp + (chr_len / 2))
+
+# ==============================================================================
+# GENERAR Y GUARDAR EL MANHATTAN PLOT
+# ==============================================================================
+png("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Manhattan_Finalistas_Proporcional.png", 
+    width = 4000, height = 2000, res = 300)
+
+ggplot(gwas_data, aes(x = BPcum, y = -log10(P), color = as.factor(CHR))) +
+  
+  # --- Dibujar tus SNPs candidatos ---
+  # Al ser pocos puntos, aumentamos el tamaño (2.5) para que destaquen con elegancia
+  geom_point(alpha = 0.9, size = 2.5, shape = 18) + 
+  
+  # --- Paleta de colores alternos para los bloques cromosómicos ---
+  scale_color_manual(values = rep(c("#D81B60", "#1E88E5"), 11)) +
+  
+  # --- Eje X: Imprime obligatoriamente los números del 1 al 22 bien espaciados ---
+  scale_x_continuous(labels = axis_set$CHR, breaks = axis_set$center) +
+  
+  # --- Eje Y ---
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 10), breaks = seq(0, 10, by = 2)) + 
+  
+  # --- Líneas de corte de tus criterios estadísticos ---
+  geom_hline(yintercept = -log10(1e-5), color = "darkblue", linetype = "dashed", size = 0.4) + # Sugestivo
+  geom_hline(yintercept = -log10(1e-6), color = "darkred", size = 0.5) +                     # Tu corte Mega
+  
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.border = element_blank(),
+    panel.grid.major.x = element_line(color = "gray95", linetype = "dotted"), # Líneas guía verticales suaves
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_line(color = "gray95"),
+    panel.grid.minor.y = element_blank(),
+    axis.text.x = element_text(size = 9, face = "bold", vjust = 0.5),
+    axis.text.y = element_text(size = 11),
+    axis.title = element_text(size = 13, face = "bold"),
+    plot.title = element_text(size = 15, face = "bold", hjust = 0.5)
+  ) +
+  labs(
+    title = "Genome-Wide Association Study - Selected High-Priority Candidates (N=2,244)",
+    x = "Chromosome (Physical position aligned to hg19)",
+    y = expression(-log[10](italic(p)))
+  )
+
+dev.off()
+```
+
+
+##MANHATTAN COMPARATIVO
+```{r}
+# ==============================================================================
+# GRÁFICO DE TRAYECTORIA ESTADÍSTICA ORDENADO POR CROMOSOMA (EJE Y: 0 A 10)
+# ==============================================================================
+
+library(data.table)
+library(tidyverse)
+
+# 1. Cargar el archivo de tus SNPs elegidos
+df_finalistas <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/SNPS_FINALISTAS_GLOBAL_LC _SINHB.csv")
+
+# Limpieza rápida de cromosomas para asegurar ordenación numérica correcta
+df_finalistas$CHR <- as.numeric(gsub("chr", "", as.character(df_finalistas$CHR)))
+
+# ==============================================================================
+# 2. ORDENAR LOS SNPS POR SU POSICIÓN GENÓMICA REAL (CHR Y BP)
+# ==============================================================================
+# Ordenamos la tabla original para que al convertir el SNP en factor
+
+df_finalistas_ordenado <- df_finalistas %>%
+  arrange(CHR, BP)
+
+# Fijamos el orden de los niveles del factor basándonos en esa ordenación genómica
+df_finalistas_ordenado$SNP <- factor(
+  df_finalistas_ordenado$SNP, 
+  levels = unique(df_finalistas_ordenado$SNP)
+)
+
+# ==============================================================================
+# 3. REESTRUCTURAR DATOS A FORMATO LARGO
+# ==============================================================================
+df_plot_long <- df_finalistas_ordenado %>%
+  dplyr::select(SNP, CHR, P_disc, P_val, P_mega) %>%
+  pivot_longer(
+    cols = c(P_disc, P_val, P_mega), 
+    names_to = "Etapa_Analisis", 
+    values_to = "P_valor"
+  ) %>%
+  mutate(
+    LogP = -log10(P_valor),
+    # Asignación de etiquetas para la leyenda
+    Etapa_Analisis = case_when(
+      Etapa_Analisis == "P_disc" ~ "Discovery",
+      Etapa_Analisis == "P_val"  ~ "Validation",
+      Etapa_Analisis == "P_mega" ~ "Mega-Analysis"
+    )
+  )
+
+# Convertimos la etapa en factor para controlar el orden en la leyenda
+df_plot_long$Etapa_Analisis <- factor(
+  df_plot_long$Etapa_Analisis, 
+  levels = c("Discovery", "Validation", "Mega-Analysis")
+)
+
+# ==============================================================================
+# 4. GENERAR Y GUARDAR EL GRÁFICO DEFINITIVO
+# ==============================================================================
+png("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/MANHATTAN_SINHB__Pvalores_DiscValMega.png", 
+    width = 4200, height = 2200, res = 300)
+
+ggplot(df_plot_long, aes(x = SNP, y = LogP, group = SNP)) +
+  
+  # --- Línea vertical gris de fondo que conecta los tres puntos de cada SNP ---
+  geom_line(color = "gray85", linetype = "solid", size = 0.5) +
+  
+  # --- Puntos de los p-valores ---
+  geom_point(aes(color = Etapa_Analisis), size = 3.8, shape = 16, alpha = 0.9) +
+  
+  # --- Paleta de colores estricta solicitada ---
+  scale_color_manual(values = c(
+    "Discovery"  = "#FFC107", 
+    "Validation"     = "#1E88E5", 
+    "Mega-Analysis" = "#2E7D32"  
+  )) +
+  
+  # --- [NUEVO] EJE Y FIJADO ESTRICTAMENTE DE 0 A 10 ---
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 10), breaks = seq(0, 10, by = 1)) +
+  
+  # --- Líneas de umbrales metodológicos del estudio ---
+  geom_hline(yintercept = -log10(1e-5), color = "darkblue", linetype = "dotted", size = 0.5) +
+  geom_hline(yintercept = -log10(1e-6), color = "darkred", linetype = "dashed", size = 0.5) +
+  
+  # --- Estilo visual de alta calidad para la memoria de tesis ---
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11, face = "bold"),
+    panel.grid.major.x = element_blank(), 
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_line(color = "gray95"),
+    panel.grid.minor.y = element_blank(),
+    # Rotamos los nombres de los SNPs para que se lean perfectamente
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1, face = "bold"), 
+    axis.text.y = element_text(size = 11),
+    axis.title = element_text(size = 13, face = "bold"),
+    plot.title = element_text(size = 15, face = "bold", hjust = 0.5)
+  ) +
+  labs(
+    title = "Statistical Cross-Cohort Trajectory",
+    x = "SNPS",
+    y = expression(-log[10](italic(p)))
+  )
+
+dev.off()
+```
+
+## CALCULO MAF
+
+```{r}
+library(data.table)
+library(tidyverse)
+
+# ==============================================================================
+# 1. RUTA LOCAL DE TU EXECUTABLE DE PLINK (¡CAMBIA ESTO!)
+# ==============================================================================
+# Pon la ruta absoluta a tu archivo plink.exe para evitar el Error 127
+ruta_ejecutable_plink <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe" 
+
+# ==============================================================================
+# 2. LEER TUS SNPS FINALISTAS Y CREAR LISTA TEMPORAL
+# ==============================================================================
+df_finalistas <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/SNPS_FINALISTAS_GLOBAL_LC.csv")
+lista_snps <- unique(df_finalistas$SNP)
+
+ruta_lista_txt <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/temp_snps_finalistas.txt"
+writeLines(lista_snps, ruta_lista_txt)
+
+# Rutas de tus datos de entrada y salida
+bfile_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+output_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MAFS_FINALISTAS_OUTPUT"
+
+# ==============================================================================
+# 3. CONSTRUIR COMANDO CON RUTA ABSOLUTA
+# ==============================================================================
+# Al poner la ruta exacta entre comillas, el sistema operativo no se pierde (evita Error 127)
+comando_plink <- paste0(
+  "\"", ruta_ejecutable_plink, "\" --bfile \"", bfile_path, "\" ",
+  "--extract \"", ruta_lista_txt, "\" ",
+  "--freq ",
+  "--out \"", output_path, "\""
+)
+
+# Ejecutar el comando
+print(paste("Ejecutando:", comando_plink))
+system(comando_plink)
+
+# ==============================================================================
+# 4. COMPROBACIÓN Y ACOPLE DE DATOS
+# ==============================================================================
+ruta_frecuencias <- paste0(output_path, ".frq")
+
+if(file.exists(ruta_frecuencias)) {
+  df_mafs <- fread(ruta_frecuencias)
+  print("¡MAF extraídas con éxito usando la ruta absoluta!")
+  
+  # Fusionar con tu archivo original
+  df_mafs_clean <- df_mafs %>% dplyr::select(SNP, MAF_unificada = MAF, A1_Minor = A1)
+  df_final_con_maf <- df_finalistas %>% left_join(df_mafs_clean, by = "SNP")
+  
+  fwrite(df_final_con_maf, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/SNPS_FINALISTAS_CON_MAFS.csv")
+  print("Archivo actualizado guardado correctamente.")
+} else {
+  print("El archivo sigue sin generarse. Por favor, abre el archivo de texto que se habrá creado en:")
+  print(paste0(output_path, ".log"))
+  print("Ahí dentro PLINK te dirá exactamente qué error de sintaxis o de lectura de disco ha tenido.")
+}
+
+if(file.exists(ruta_lista_txt)) file.remove(ruta_lista_txt)
+```
+
+
+
