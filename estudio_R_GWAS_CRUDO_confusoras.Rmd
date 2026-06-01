@@ -1,0 +1,1298 @@
+---
+title: "GWAS_CRUDO_confusoras"
+author: "sara sanchez"
+date: "2026-04-22"
+output: html_document
+---
+
+# 1.CONFUSORAS: sexo, edad, edad2, edad\*sexo, batch
+
+## 1.1.Ordenar GWAS de PLINK
+
+```{r}
+library(readr)
+library(dplyr)
+
+# 1. Ruta del archivo
+path_results <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic"
+
+# 2. Leer los resultados
+gwas_results <- read.table(path_results, header = TRUE, stringsAsFactors = FALSE)
+
+# 3. Ordenar y guardar (fíjate en la flecha de asignación)
+top_snps <- gwas_results %>%
+  arrange(P)
+
+# 4. Ver los 50 mejores
+# No hace falta meter top_snps dentro de head si ya usas el pipe, o úsalo normal:
+head(top_snps, 50)
+```
+
+## 1.2.Eliminar LD de los que tienen un pvalor de -6 en adlenate
+
+```{r, warning=FALSE, message=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+
+
+# 2. Seleccionar los primeros 37 y asegurar orden por posición
+top_37 <- top_snps %>%
+  slice(1:37) %>%
+  arrange(CHR, BP)
+
+# 3. Aplicar lógica de Clumping (Agrupación por cercanía)
+# Definimos que si dos SNPs están a menos de 500.000 pb, pertenecen al mismo gen/locus
+clumped_results <- top_37 %>%
+  group_by(CHR) %>%
+  mutate(
+    # Si la distancia con el SNP anterior es > 500kb, es un locus nuevo
+    is_new_locus = ifelse(is.na(lag(BP)) | (BP - lag(BP) > 500000), 1, 0),
+    locus_id = cumsum(is_new_locus)
+  ) %>%
+  group_by(CHR, locus_id) %>%
+  # DE CADA GRUPO, NOS QUEDAMOS CON EL QUE TIENE EL P-VALOR MÁS BAJO
+  filter(P == min(P)) %>%
+  # En caso de empate en P-valor, nos quedamos con uno solo
+  slice(1) %>%
+  ungroup()
+
+# 4. Mostrar resultados finales
+cat("De los 37 SNPs originales, nos hemos quedado con", nrow(clumped_results), "SNPs líderes tras el clumping.\n")
+print(clumped_results %>% select(CHR, SNP, BP, P, OR, L95     ,U95 ))
+clumped_results
+
+
+# 5. Guardar la lista de LEAD SNPs
+write.table(clumped_results$SNP, 
+            "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/TOP_SNPS_CLUMPED_gwas_confusoras.txt", 
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+## 1.3.Modelo logistico con confusoras+clinicas
+
+```{r,warning=FALSE, message=FALSE}
+library(readr)
+library(dplyr)
+library(broom)
+
+# 1. Cargar Base de Datos Clínica
+df_clinica_disc <- read_tsv("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt") %>%
+  rename(BATCH = BATCH.y) %>%
+  mutate(edad_sq = edad_final^2)
+
+# 2. Cargar Genotipos (.raw)
+df_geno_disc <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/datos_indiv_para_SNPS_confusoras.raw", 
+                      header = TRUE, check.names = FALSE)
+
+# --- LIMPIEZA CLAVE DE NOMBRES ---
+# Sustituimos ':' por '_' en TODO el dataframe de genotipos
+# También eliminamos posibles espacios o caracteres raros
+names(df_geno_disc) <- gsub(":", "_", names(df_geno_disc))
+names(df_geno_disc) <- gsub("-", "_", names(df_geno_disc))
+
+# Nos quedamos solo con FID y los SNPs limpios
+df_geno_clean_disc <- df_geno_disc %>% select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 3. Unir todo por FID
+df_total_disc <- inner_join(df_clinica_disc, df_geno_clean_disc, by = "FID")
+
+# --- GESTIÓN DE MISSING DATA ---
+# El GLM fallará si hay NAs en las variables del modelo. 
+vars_clinicas_disc <- c("sexo", "edad_final", "edad_sq", "BATCH", "tabaquismo", "seg_vacunado","sexo_edad", 
+                   "uci", "asintomatico", "Diabetes", "Obesidad", "Cardiopatia_isquemica", "EPOC")
+vars_snps_disc <- names(df_geno_clean_disc)[names(df_geno_clean_disc) != "FID"]
+
+df_modelo_final_disc <- df_total_disc %>%
+  select(covid_persistente, all_of(vars_clinicas_disc), all_of(vars_snps_disc)) %>%
+  na.omit() # Esto es vital para que el GLM no escupa errores de evaluación
+
+# 4. Preparar la fórmula (usando los nuevos nombres sin ':')
+formula_final_disc <- as.formula(
+  paste("covid_persistente ~", paste(c(vars_clinicas_disc, vars_snps_disc), collapse = " + "))
+)
+
+# 5. Ejecutar la Regresión Logística
+# Usamos df_modelo_final que ya no tiene caracteres raros ni NAs
+modelo_integrado_disc <- glm(formula_final_disc, data = df_modelo_final_disc, family = binomial)
+
+# 6. Resultados con Odds Ratios
+resultados_modelo_disc <- tidy(modelo_integrado_disc, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(p.value)
+
+# Ver el resultado
+resultados_modelo_disc
+
+
+# Sustituye 'df_modelo_final' por el nombre de cada uno de tus dataframes
+df_modelo_final_disc %>%
+  group_by(covid_persistente) %>%
+  summarise(
+    n = n(),
+    media_alelo_G = mean(chr12_117848446_G_A_G, na.rm = TRUE)
+  )
+
+
+```
+
+## Metricas train test
+
+```{r}
+###############################################################
+# MÉTRICAS MODELO LOGÍSTICO
+# Split Train/Test (70/30)
+# AUC, Sens, Spec, Accuracy, F1, Brier, ROC
+###############################################################
+
+library(readr)
+library(dplyr)
+library(broom)
+library(caret)
+library(pROC)
+library(DescTools)
+
+set.seed(1234)
+
+###############################################################
+# 1. CARGA DATOS
+###############################################################
+
+df_clinica <- read_tsv(
+"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt"
+) %>%
+  rename(BATCH = BATCH.y) %>%
+  mutate(edad_sq = edad_final^2)
+
+df_geno <- read.table(
+"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/datos_indiv_para_SNPS_confusoras.raw",
+header = TRUE,
+check.names = FALSE
+)
+
+names(df_geno) <- gsub(":", "_", names(df_geno))
+names(df_geno) <- gsub("-", "_", names(df_geno))
+
+df_geno_clean <- df_geno %>%
+  select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+df_total <- inner_join(df_clinica, df_geno_clean, by = "FID")
+
+###############################################################
+# 2. VARIABLES
+###############################################################
+
+vars_clinicas <- c(
+"sexo","edad_final","edad_sq","BATCH",
+"tabaquismo","seg_vacunado","sexo_edad",
+"uci","asintomatico","Diabetes","Obesidad",
+"Cardiopatia_isquemica","EPOC"
+)
+
+vars_snps <- names(df_geno_clean)[names(df_geno_clean)!="FID"]
+
+df_modelo_final <- df_total %>%
+  select(covid_persistente, all_of(vars_clinicas), all_of(vars_snps)) %>%
+  na.omit()
+
+###############################################################
+# 3. TRAIN / TEST STRATIFICADO
+###############################################################
+
+idx <- createDataPartition(
+  df_modelo_final$covid_persistente,
+  p = 0.70,
+  list = FALSE
+)
+
+train <- df_modelo_final[idx, ]
+test  <- df_modelo_final[-idx, ]
+
+cat("Train:", nrow(train), "\n")
+cat("Test :", nrow(test), "\n")
+
+###############################################################
+# 4. MODELO
+###############################################################
+
+formula_final <- as.formula(
+paste(
+"covid_persistente ~",
+paste(c(vars_clinicas, vars_snps), collapse=" + ")
+)
+)
+
+modelo_integrado <- glm(
+formula_final,
+data = train,
+family = binomial
+)
+
+###############################################################
+# 5. PREDICCIONES TEST
+###############################################################
+
+test$prob <- predict(
+modelo_integrado,
+newdata = test,
+type = "response"
+)
+
+test$pred <- ifelse(test$prob >= 0.5, 1, 0)
+
+###############################################################
+# 6. MÉTRICAS
+###############################################################
+
+cm <- confusionMatrix(
+factor(test$pred),
+factor(test$covid_persistente),
+positive = "1"
+)
+
+# ROC / AUC
+roc_obj <- roc(test$covid_persistente, test$prob)
+auc_val <- auc(roc_obj)
+
+# Brier
+brier <- mean((test$prob - test$covid_persistente)^2)
+
+# F1
+precision <- cm$byClass["Pos Pred Value"]
+recall    <- cm$byClass["Sensitivity"]
+
+f1 <- 2 * ((precision * recall) / (precision + recall))
+
+###############################################################
+# 7. RESULTADOS
+###############################################################
+
+metricas <- data.frame(
+AUC = round(as.numeric(auc_val),4),
+Accuracy = round(cm$overall["Accuracy"],4),
+Sensitivity = round(cm$byClass["Sensitivity"],4),
+Specificity = round(cm$byClass["Specificity"],4),
+Precision = round(precision,4),
+NPV = round(cm$byClass["Neg Pred Value"],4),
+F1 = round(f1,4),
+Brier = round(brier,4)
+)
+
+print(metricas)
+
+###############################################################
+# 8. ROC PLOT
+###############################################################
+
+plot(
+roc_obj,
+main="ROC Modelo COVID Persistente",
+print.auc=TRUE
+)
+
+
+```
+
+## Metricas kfold 10
+
+```{r}
+###############################################################
+# VALIDACIÓN 10-FOLD CROSS VALIDATION
+# Modelo COVID Persistente
+# Devuelve:
+# AUC medio
+# Accuracy media
+# Sens/spec medias
+# F1 medio
+###############################################################
+
+library(readr)
+library(dplyr)
+library(caret)
+library(pROC)
+
+set.seed(1234)
+
+###############################################################
+# 1. CARGA DATOS
+###############################################################
+
+df_clinica <- read_tsv(
+"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt"
+) %>%
+ rename(BATCH = BATCH.y) %>%
+ mutate(edad_sq = edad_final^2)
+
+df_geno <- read.table(
+"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/datos_indiv_para_SNPS_confusoras.raw",
+header=TRUE,
+check.names=FALSE
+)
+
+names(df_geno) <- gsub(":", "_", names(df_geno))
+names(df_geno) <- gsub("-", "_", names(df_geno))
+
+df_geno_clean <- df_geno %>%
+ select(-IID,-PAT,-MAT,-SEX,-PHENOTYPE)
+
+df_total <- inner_join(df_clinica, df_geno_clean, by="FID")
+
+###############################################################
+# 2. VARIABLES
+###############################################################
+
+vars_clinicas <- c(
+"sexo","edad_final","edad_sq","BATCH",
+"tabaquismo","seg_vacunado","sexo_edad",
+"uci","asintomatico","Diabetes","Obesidad",
+"Cardiopatia_isquemica","EPOC"
+)
+
+vars_snps <- names(df_geno_clean)[names(df_geno_clean)!="FID"]
+
+df_modelo <- df_total %>%
+ select(covid_persistente, all_of(vars_clinicas), all_of(vars_snps)) %>%
+ na.omit()
+
+###############################################################
+# 3. FÓRMULA
+###############################################################
+
+formula_final <- as.formula(
+paste(
+"covid_persistente ~",
+paste(c(vars_clinicas, vars_snps), collapse=" + ")
+)
+)
+
+###############################################################
+# 4. CREAR FOLDS ESTRATIFICADOS
+###############################################################
+
+folds <- createFolds(
+df_modelo$covid_persistente,
+k = 10,
+returnTrain = FALSE
+)
+
+###############################################################
+# 5. LOOP CV
+###############################################################
+
+resultados <- data.frame()
+
+for(i in 1:10){
+
+cat("Fold:", i, "\n")
+
+test_idx <- folds[[i]]
+
+test  <- df_modelo[test_idx, ]
+train <- df_modelo[-test_idx, ]
+
+modelo <- glm(
+formula_final,
+data = train,
+family = binomial
+)
+
+test$prob <- predict(
+modelo,
+newdata=test,
+type="response"
+)
+
+test$pred <- ifelse(test$prob >= 0.5, 1, 0)
+
+# confusion matrix
+cm <- confusionMatrix(
+factor(test$pred),
+factor(test$covid_persistente),
+positive="1"
+)
+
+# auc
+roc_obj <- roc(test$covid_persistente, test$prob, quiet=TRUE)
+auc_val <- as.numeric(auc(roc_obj))
+
+precision <- cm$byClass["Pos Pred Value"]
+recall    <- cm$byClass["Sensitivity"]
+
+f1 <- 2*((precision*recall)/(precision+recall))
+
+fila <- data.frame(
+Fold = i,
+AUC = auc_val,
+Accuracy = cm$overall["Accuracy"],
+Sensitivity = cm$byClass["Sensitivity"],
+Specificity = cm$byClass["Specificity"],
+Precision = precision,
+F1 = f1
+)
+
+resultados <- rbind(resultados, fila)
+}
+
+###############################################################
+# 6. RESUMEN FINAL
+###############################################################
+
+summary_cv <- resultados %>%
+ summarise(
+ AUC_mean = mean(AUC, na.rm=TRUE),
+ AUC_sd   = sd(AUC, na.rm=TRUE),
+
+ Accuracy_mean = mean(Accuracy, na.rm=TRUE),
+ Sens_mean = mean(Sensitivity, na.rm=TRUE),
+ Spec_mean = mean(Specificity, na.rm=TRUE),
+ Precision_mean = mean(Precision, na.rm=TRUE),
+ F1_mean = mean(F1, na.rm=TRUE)
+ ) %>%
+ mutate(across(everything(), round,4))
+
+print(resultados)
+print(summary_cv)
+
+```
+
+## Metricas validacion
+
+```{r}
+###############################################################
+# VALIDACIÓN FINAL: COHORTE SARA
+###############################################################
+
+library(data.table)
+library(dplyr)
+library(pROC)
+library(caret)
+
+# --- 1. CARGAR CLÍNICA SARA ---
+df_sara <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt", data.table=FALSE)
+
+# Limpiar nombres de columnas (quitar espacios y puntos)
+names(df_sara) <- gsub(" ", "_", names(df_sara))
+names(df_sara) <- gsub("\\.", "_", names(df_sara))
+
+# --- 2. CARGAR Y LIMPIAR GENÉTICA SARA (.raw generado con AD) ---
+# --- 2. CARGAR Y LIMPIAR GENÉTICA SARA ---
+geno_sara <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/validacion_snps.raw", data.table=FALSE)
+
+# A. Quitar columnas _HET (siempre sobran en validación aditiva)
+geno_sara <- geno_sara[, !grepl("_HET", names(geno_sara))]
+
+# B. LIMPIEZA IGUAL QUE EN ENTRENAMIENTO:
+# En tu entrenamiento usaste gsub(":", "_") y gsub("-", "_"). 
+# NO USES el gsub que te pasé antes de borrar los alelos final (_A).
+names(geno_sara) <- gsub(":", "_", names(geno_sara))
+names(geno_sara) <- gsub("-", "_", names(geno_sara))
+
+# C. Limpiar columnas técnicas
+geno_sara <- geno_sara %>% select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 1. Variables que el modelo NECESITA:
+vars_modelo <- labels(terms(modelo_integrado))
+
+# 2. Variables que tu tabla de validación TIENE:
+vars_tabla <- names(df_valid)
+
+# 3. Ver cuáles te faltan (esto debería salir vacío)
+setdiff(vars_modelo, vars_tabla)
+# --- 1. RE-CARGAR GENÉTICA SARA (SIN BORRAR NADA) ---
+geno_sara <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/validacion_snps.raw", data.table=FALSE)
+
+# --- 2. MAPEO AUTOMÁTICO DE NOMBRES ---
+# Vamos a transformar los nombres de geno_sara para que coincidan con el entrenamiento
+# Cambiamos ':' por '_' y '-' por '_' como hiciste en el modelo original
+names(geno_sara) <- gsub(":", "_", names(geno_sara))
+names(geno_sara) <- gsub("-", "_", names(geno_sara))
+
+# --- 3. VERIFICACIÓN DE SEGURIDAD ---
+# Sacamos la lista de variables que el modelo NECESITA (solo los SNPs)
+vars_snps_modelo <- labels(terms(modelo_integrado))
+vars_snps_modelo <- vars_snps_modelo[!vars_snps_modelo %in% c("sexo","edad_final","edad_sq","BATCH",
+                                                              "tabaquismo","seg_vacunado","sexo_edad",
+                                                              "uci","asintomatico","Diabetes","Obesidad",
+                                                              "Cardiopatia_isquemica","EPOC")]
+
+# Comprobamos si alguno de esos SNPs falta en geno_sara
+faltan_en_geno <- setdiff(vars_snps_modelo, names(geno_sara))
+
+if(length(faltan_en_geno) > 0) {
+  cat("ATENCIÓN: Faltan estos nombres en geno_sara:\n")
+  print(faltan_en_geno)
+} else {
+  cat("¡Perfecto! Todos los SNPs están listos.\n")
+}
+
+# --- 4. UNIR Y PREDECIR ---
+df_valid <- df_sara %>%
+  inner_join(geno_sara, by = c("IID" = "FID")) %>%
+  mutate(
+    target = as.numeric(as.character(long_covid)),
+    sexo = as.numeric(sexo),
+    edad_sq = edad_final^2,
+    sexo_edad = sexo * edad_final,
+    Diabetes = as.numeric(Diabetes),
+    Obesidad = as.numeric(obesidad),
+    Cardiopatia_isquemica = as.numeric(heart_disease),
+    EPOC = as.numeric(EPOC),
+    tabaquismo = as.numeric(tabaquismo),
+    uci = as.numeric(uci),
+    asintomatico = as.numeric(asintomatico),
+    BATCH = 1, 
+    seg_vacunado = 1 
+  )
+
+df_valid$prob <- predict(modelo_integrado, newdata = df_valid, type = "response")
+# --- 3. UNIR Y ALINEAR VARIABLES ---
+df_valid <- df_sara %>%
+  inner_join(geno_sara, by = c("IID" = "FID")) %>% 
+  mutate(
+    # Variable respuesta (Asegurar que sea numérica 0/1)
+    # Si tus controles son 1 y casos 2, resta 1: (as.numeric(long_covid) - 1)
+    target = as.numeric(as.character(long_covid)),
+    
+    # Renombrar variables clínicas para que coincidan con el modelo Europeo
+    sexo = as.numeric(sexo),
+    edad_sq = edad_final^2,
+    sexo_edad = sexo * edad_final,
+    Diabetes = as.numeric(Diabetes),
+    Obesidad = as.numeric(obesidad),
+    Cardiopatia_isquemica = as.numeric(heart_disease),
+    EPOC = as.numeric(EPOC),
+    tabaquismo = as.numeric(tabaquismo),
+    uci = as.numeric(uci),
+    asintomatico = as.numeric(asintomatico),
+    
+    BATCH = 1, 
+    seg_vacunado = 1 
+  ) %>%
+  filter(!is.na(target))
+
+# --- 4. PREDICCIÓN ---
+df_valid$prob <- predict(modelo_integrado, newdata = df_valid, type = "response")
+
+# --- 5. CÁLCULO DE MÉTRICAS ---
+# Curva ROC y AUC
+roc_obj <- roc(df_valid$target, df_valid$prob)
+auc_val <- auc(roc_obj)
+
+# Punto de corte 0.5 para matriz de confusión
+df_valid$pred <- ifelse(df_valid$prob >= 0.5, 1, 0)
+cm <- confusionMatrix(factor(df_valid$pred), factor(df_valid$target), positive = "1")
+
+# --- 6. MOSTRAR RESULTADOS ---
+cat("\n======================================\n")
+cat("RESULTADOS VALIDACIÓN COHORTE SARA\n")
+cat("======================================\n")
+cat("AUC:", round(auc_val, 4), "\n")
+cat("Exactitud (Accuracy):", round(cm$overall["Accuracy"], 4), "\n")
+cat("Sensibilidad:", round(cm$byClass["Sensitivity"], 4), "\n")
+cat("Especificidad:", round(cm$byClass["Specificity"], 4), "\n")
+cat("======================================\n")
+
+# Dibujar la curva
+plot(roc_obj, col="#2196F3", lwd=3, main=paste("Curva ROC SARA (AUC =", round(auc_val, 4), ")"))
+abline(a=0, b=1, lty=2, col="gray")
+
+```
+
+```{r}
+# 1. Cargamos la genética 
+geno_sara <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/validacion_snps.raw", data.table=FALSE)
+
+# 2. CREAMOS EL DICCIONARIO DE TRADUCCIÓN
+traduccion <- c(
+  "rs72688340" = "chr1_47518167_G_A",
+  "rs138285786" = "chr1_217777042_AG_A",
+  "rs2748081"   = "chr1_228807336_C_T",
+  "rs76580921"  = "chr3_98306323_C_T",
+  "rs34316881"  = "chr4_102465937_C_T",
+  "rs10484718"  = "chr6_127859906_A_T",
+  "rs2281435"   = "chr6_150204424_C_T",
+  "rs11775779"  = "chr8_11440198_T_C",
+  "rs507551"    = "chr9_76668271_C_T",
+  "rs10880646"  = "chr12_44488827_C_T",
+  "rs2570558"   = "chr12_117848446_G_A",
+  "rs77140337"  = "chr13_75393637_T_C",
+  "rs191221477" = "chr15_51886103_C_T",
+  "rs140381331" = "chr17_66786118_G_A",
+  "rs59086770"  = "chr18_48991282_G_A",
+  "rs73965450"  = "chr18_70824065_C_T",
+  "rs1671164"   = "chr19_55079231_G_A"
+)
+
+# 3. APLICAR LA TRADUCCIÓN A LOS NOMBRES DE LAS COLUMNAS
+for(rs in names(traduccion)) {
+  names(geno_sara) <- gsub(rs, traduccion[rs], names(geno_sara))
+}
+
+# 4. LIMPIEZA FINAL DE PUNTOS/GUIONES 
+# Si después del cambio queda algún ":" lo pasamos a "_"
+names(geno_sara) <- gsub(":", "_", names(geno_sara))
+
+# 5. VERIFICACIÓN CRÍTICA
+# Mira si ahora coinciden con los que pedía el error
+print(names(geno_sara)[grepl("chr1_47518167", names(geno_sara))])
+# Debería salir: "chr1_47518167_G_A_A" y "chr1_47518167_G_A_HET"
+
+# --- 6. UNIR Y PREDECIR ---
+df_valid <- df_sara %>%
+  inner_join(geno_sara, by = c("IID" = "FID")) %>%
+  mutate(
+    target = as.numeric(as.character(long_covid)),
+    sexo = as.numeric(sexo),
+    edad_sq = edad_final^2,
+    sexo_edad = sexo * edad_final,
+    Diabetes = as.numeric(Diabetes),
+    Obesidad = as.numeric(obesidad),
+    Cardiopatia_isquemica = as.numeric(heart_disease),
+    EPOC = as.numeric(EPOC),
+    tabaquismo = as.numeric(tabaquismo),
+    uci = as.numeric(uci),
+    asintomatico = as.numeric(asintomatico),
+    BATCH = 1,
+    seg_vacunado = 1
+  )
+
+# El predict() ahora encontrará sus columnas exactas
+df_valid$prob <- predict(modelo_integrado, newdata = df_valid, type = "response")
+
+# Calcular AUC
+library(pROC)
+auc_sara <- auc(roc(df_valid$target, df_valid$prob))
+print(paste("AUC FINAL SARA:", round(auc_sara, 4)))
+```
+
+## 1.4. Tamaño muestral
+
+```{r}
+# 1. Para ver el número total de pacientes en el modelo
+n_final <- nrow(modelo_integrado$model)
+cat("El modelo final se ha quedado con", n_final, "observaciones.\n")
+
+# 2. Para ver cuántos eran casos (Long COVID) y cuántos controles
+conteo_final <- table(modelo_integrado$model$covid_persistente)
+print("Distribución de Casos (1) y Controles (0) en el modelo:")
+print(conteo_final)
+
+n_inicial <- nrow(df_clinica)
+cat("Empezaste con", n_inicial, "y has terminado con", n_final, ". ")
+cat("Has perdido", n_inicial - n_final, "pacientes debido a datos faltantes (NAs) en clínica.")
+```
+
+# 2.CONFUSORAS con Grupo
+
+## 2.1. Ordenar GWAS de PLIK
+
+```{r}
+library(readr)
+library(dplyr)
+
+# 1. Ruta del archivo
+path_results <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_grupo_CONFUSORAS.assoc.logistic"
+
+# 2. Leer los resultados
+gwas_results_grupo <- read.table(path_results, header = TRUE, stringsAsFactors = FALSE)
+
+# 3. Ordenar y guardar (fíjate en la flecha de asignación)
+top_snps_grupo <- gwas_results_grupo %>%
+  arrange(P)
+
+# 4. Ver los 50 mejores
+# No hace falta meter top_snps dentro de head si ya usas el pipe, o úsalo normal:
+head(top_snps_grupo, 50)
+```
+
+## 2.2.Eliminar LD de los TOP
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+
+
+# 2. Seleccionar los primeros 37 y asegurar orden por posición
+top_48 <- top_snps_grupo %>%
+  slice(1:48) %>%
+  arrange(CHR, BP)
+
+# 3. Aplicar lógica de Clumping (Agrupación por cercanía)
+# Definimos que si dos SNPs están a menos de 500.000 pb, pertenecen al mismo gen/locus
+clumped_results_grupo <- top_48 %>%
+  group_by(CHR) %>%
+  mutate(
+    # Si la distancia con el SNP anterior es > 500kb, es un locus nuevo
+    is_new_locus = ifelse(is.na(lag(BP)) | (BP - lag(BP) > 500000), 1, 0),
+    locus_id = cumsum(is_new_locus)
+  ) %>%
+  group_by(CHR, locus_id) %>%
+  # DE CADA GRUPO, NOS QUEDAMOS CON EL QUE TIENE EL P-VALOR MÁS BAJO
+  filter(P == min(P)) %>%
+  # En caso de empate en P-valor, nos quedamos con uno solo
+  slice(1) %>%
+  ungroup()
+
+# 4. Mostrar resultados finales
+cat("De los 48 SNPs originales, nos hemos quedado con", nrow(clumped_results_grupo), "SNPs líderes tras el clumping.\n")
+print(clumped_results_grupo %>% select(CHR, SNP, BP, P, OR)) #L95,U95))
+
+clumped_results_grupo
+
+
+write.table(clumped_results_grupo$SNP, 
+            "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/TOP_SNPS_CLUMPED_gwas_confusoras_grupo.txt", 
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+## 2.3.Modelo log con confusoras Y GRUPO, y CLINICAS
+
+```{r,warning=FALSE, message=FALSE}
+library(readr)
+library(dplyr)
+library(broom)
+
+# 1. Cargar Base de Datos Clínica
+df_clinica <- read_tsv("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt") %>%
+  rename(BATCH = BATCH.y) %>%
+  mutate(edad_sq = edad_final^2)
+
+# 2. Cargar Genotipos (.raw)
+df_geno_grupo <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/datos_indv_para_SNPS_confusorasYGrupo.raw", 
+                      header = TRUE, check.names = FALSE)
+
+# --- LIMPIEZA CLAVE DE NOMBRES ---
+# Sustituimos ':' por '_' en TODO el dataframe de genotipos
+# También eliminamos posibles espacios o caracteres raros
+names(df_geno_grupo) <- gsub(":", "_", names(df_geno_grupo))
+names(df_geno_grupo) <- gsub("-", "_", names(df_geno_grupo))
+
+# Nos quedamos solo con FID y los SNPs limpios
+df_geno_clean_grupo <- df_geno_grupo %>% select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 3. Unir todo por FID
+df_total_grupo <- inner_join(df_clinica, df_geno_clean_grupo, by = "FID")
+
+# --- GESTIÓN DE MISSING DATA ---
+# El GLM fallará si hay NAs en las variables del modelo. 
+# Seleccionamos las variables que vamos a usar y quitamos filas con NAs
+vars_clinicas_grupo <- c("sexo", "edad_final", "edad_sq", "BATCH","Grupo", "tabaquismo", "seg_vacunado", 
+                   "uci", "asintomatico", "Diabetes", "Obesidad", "Cardiopatia_isquemica", "EPOC")
+vars_snps <- names(df_geno_clean_grupo)[names(df_geno_clean_grupo) != "FID"]
+
+df_modelo_final_grupo <- df_total_grupo %>%
+  select(covid_persistente, all_of(vars_clinicas_grupo), all_of(vars_snps)) %>%
+  na.omit() # Esto es vital para que el GLM no escupa errores de evaluación
+
+# 4. Preparar la fórmula (usando los nuevos nombres sin ':')
+formula_final_grupo <- as.formula(
+  paste("covid_persistente ~", paste(c(vars_clinicas_grupo, vars_snps), collapse = " + "))
+)
+
+# 5. Ejecutar la Regresión Logística
+# Usamos df_modelo_final que ya no tiene caracteres raros ni NAs
+modelo_integrado_grupo <- glm(formula_final_grupo, data = df_modelo_final_grupo, family = binomial)
+
+# 6. Resultados con Odds Ratios
+resultados_modelo_grupo <- tidy(modelo_integrado_grupo, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(p.value)
+
+# Ver el resultado
+resultados_modelo_grupo
+
+# Guardar
+write_csv(resultados_modelo_grupo, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MODELO_FINAL_confusorasYGRUPO.csv")
+```
+
+```{r}
+# 1. Para ver el número total de pacientes en el modelo
+n_final_grupo <- nrow(modelo_integrado_grupo$model)
+cat("El modelo final se ha quedado con", n_final_grupo, "observaciones.\n")
+
+# 2. Para ver cuántos eran casos (Long COVID) y cuántos controles
+conteo_final_grupo <- table(modelo_integrado_grupo$model$covid_persistente)
+print("Distribución de Casos (1) y Controles (0) en el modelo:")
+print(conteo_final_grupo)
+
+
+n_inicial_grupo <- nrow(df_clinica)
+cat("Empezaste con", n_inicial, "y has terminado con", n_final_grupo, ". ")
+cat("Has perdido", n_inicial_grupo - n_final_grupo, "pacientes debido a datos faltantes (NAs) en clínica.")
+```
+
+# 3.CONFUSORAS sin ggrupo y solo sobre 606
+
+```{r}
+library(dplyr)
+library(broom)
+library(purrr)
+
+# 1. Definimos las confusoras básicas del GWAS original
+confusoras_gwas <- c("sexo", "edad_final", "edad_sq", "BATCH", "sexo_edad")
+
+# 2. Lista de tus 17 SNPs (limpios, con los nombres del dataframe)
+snps_a_testar <- vars_snps 
+
+# 3. Función para correr el modelo por separado para cada SNP
+correr_gwas_submuestra <- function(snp) {
+  # Creamos la fórmula: covid_persistente ~ SNP + sexo + edad...
+  formula_snp <- as.formula(paste("covid_persistente ~", snp, "+", 
+                                  paste(confusoras_gwas, collapse = " + ")))
+  
+  # Ejecutamos el modelo solo en el dataframe de 606 (df_modelo_final)
+  modelo <- glm(formula_snp, data = df_modelo_final, family = binomial)
+  
+  # Extraemos solo la fila del SNP
+  tidy(modelo, conf.int = TRUE, exponentiate = TRUE) %>%
+    filter(term == snp) %>%
+    select(term, estimate, conf.low, conf.high, p.value)
+}
+
+# 4. Ejecutar para todos los SNPs y combinar resultados
+resultados_gwas_606 <- map_df(snps_a_testar, correr_gwas_submuestra) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(p.value)
+
+# 5. Ver el resultado
+resultados_gwas_606
+# Guardar para comparar
+write_csv(resultados_gwas_606, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_N606.csv")
+
+
+
+```
+
+# 4.Validacion
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+
+# 1. Cargamos los archivos
+bim_val <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/imputacion_R2_08_plink_maf_01.bim", header = FALSE)
+top_snps <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/TOP_SNPS_CLUMPED_gwas_confusoras.txt")
+
+# 2. Extraer la posición numérica de la PRIMERA columna
+# No importa cómo se llame la columna, cogemos la columna 1 [[1]]
+# Usamos regex para sacar el número que hay entre los dos primeros ":"
+posiciones_descubrimiento <- top_snps[[1]] %>%
+  str_split_fixed(":", 3) %>% # Divide por los ":"
+  .[, 2] %>%                  # Se queda con la segunda parte (la posición)
+  as.numeric()
+
+# 3. Comparar con la columna V4 del .bim (posiciones en validación)
+ids_para_cmd <- bim_val$V2[bim_val$V4 %in% posiciones_descubrimiento]
+
+# 4. Guardar la lista
+write.table(ids_para_cmd, "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/lista_ids_rs.txt", 
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# Verificación
+cat("Posiciones extraídas del descubrimiento:", length(posiciones_descubrimiento), "\n")
+cat("SNPs encontrados en la validación (coincidencia de posición):", length(ids_para_cmd), "\n")
+```
+
+```{r}
+library(data.table)
+library(dplyr)
+library(broom)
+library(stringr)
+
+# ===========================================================================
+# 1. CARGA DE DATOS
+# ===========================================================================
+
+# Carga de base de datos clínica (Asegúrate de que la ruta es correcta)
+ruta_clinica <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt"
+df_val_clin <- fread(ruta_clinica)
+
+# Carga de genotipos (archivo .raw de PLINK)
+ruta_genotipos <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/genotipos_reales.raw"
+df_val_geno <- fread(ruta_genotipos)
+
+# Carga de información de SNPs (para el mapeo de nombres)
+top_snps <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/TOP_SNPS_CLUMPED_gwas_confusoras.txt")
+bim_val  <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/imputacion_R2_08_plink_maf_01.bim")
+
+# ===========================================================================
+# 2. LIMPIEZA DE GENOTIPOS Y MAPEO
+# ===========================================================================
+
+# A. Eliminamos las columnas _HET para quedarnos con el modelo aditivo (0, 1, 2)
+cols_aditivas <- names(df_val_geno)[!grepl("_HET", names(df_val_geno))]
+df_val_geno_limpio <- df_val_geno[, ..cols_aditivas]
+
+# B. Limpiamos los nombres (quitamos el alelo extra que pone PLINK como _A o _T)
+names(df_val_geno_limpio) <- gsub("_[A-Z]$|:.*", "", names(df_val_geno_limpio))
+
+# C. Identificamos los rsID de los 17 SNPs basados en su posición
+top_snps_info <- top_snps %>%
+  as.data.frame() %>%
+  mutate(pos_original = as.numeric(str_split_fixed(.[[1]], ":", 3)[, 2]))
+
+mapeo_rsid <- bim_val %>%
+  select(rsID_val = V2, pos_val = V4) %>%
+  filter(pos_val %in% top_snps_info$pos_original)
+
+vars_snps_val <- mapeo_rsid$rsID_val
+
+# ===========================================================================
+# 3. UNIÓN Y PREPARACIÓN DE LA BASE DE DATOS FINAL
+# ===========================================================================
+
+df_modelo <- df_val_clin %>%
+  inner_join(df_val_geno_limpio, by = c("FID" = "FID")) %>%
+  mutate(
+    sexo          = as.numeric(sexo),           # 1=H, 2=M
+    edad_final    = as.numeric(edad_final),
+    edad2         = edad_final^2,               # Edad al cuadrado
+    edad_sexo     = sexo * edad_final,          # Interacción
+    Diabetes      = as.numeric(Diabetes),
+    obesidad      = as.numeric(obesidad),
+    heart_disease = as.numeric(heart_disease),
+    EPOC          = as.numeric(EPOC),
+    uci           = as.numeric(uci),
+    tabaquismo    = as.numeric(tabaquismo),
+    asintomatico  = as.numeric(asintomatico)
+  )
+
+# ===========================================================================
+# 4. DEFINICIÓN DEL MODELO Y EJECUCIÓN
+# ===========================================================================
+
+# Variables clínicas solicitadas
+clinica_vars <- c("sexo", "edad_final", "edad_sexo", "edad2", "Diabetes", 
+                  "obesidad", "heart_disease", "EPOC", "uci", "asintomatico", "tabaquismo")
+
+# Construcción de la fórmula
+formula_txt <- paste("long_covid ~", 
+                     paste(c(clinica_vars, vars_snps_val), collapse = " + "))
+
+# Ejecución del Modelo Logístico
+modelo_final <- glm(as.formula(formula_txt), data = df_modelo, family = binomial)
+
+# ===========================================================================
+# 5. EXTRACCIÓN DE RESULTADOS (OR, P-VALOR, IC 95%)
+# ===========================================================================
+
+tabla_resultados <- tidy(modelo_final, conf.int = TRUE, exponentiate = TRUE) %>%
+  select(
+    Variable  = term,
+    OR        = estimate,
+    P_valor   = p.value,
+    IC_95_inf = conf.low,
+    IC_95_sup = conf.high
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+# ===========================================================================
+# 6. GUARDAR Y MOSTRAR
+# ===========================================================================
+
+print(as.data.frame(tabla_resultados), row.names = FALSE)
+
+write.csv(tabla_resultados, 
+          "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/RESULTADOS_VALIDACION_TFM_FINAL.csv", 
+          row.names = FALSE)
+tabla_resultados
+
+cat("\n¡Modelo completado! El archivo se ha guardado en tu carpeta de validación.\n")
+```
+
+```{r}
+bim_val[V4 == "150204424", V2]
+
+colnames(fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt", nrows = 0))
+
+# Ver las primeras 10 filas y las primeras 15 columnas
+df_val_geno[1:10, 1:15]
+
+col_idx <- grep("rs138285786", names(df_val_geno))
+print(df_val_geno[1:10, c(1, 2, col_idx), with = FALSE])
+
+```
+
+## 4.2.Ordenar GWAS crudo con confusoras de plink
+
+```{r}
+library(data.table)
+library(dplyr)
+
+# 1. Cargar los resultados del GWAS de validación
+ruta_gwas_val <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/GWAS_VALIDACION_AJUSTADO.assoc.logistic"
+gwas_val <- fread(ruta_gwas_val)
+
+# 2. Limpieza inicial: Filtramos por el test aditivo y quitamos posibles NA
+gwas_clean <- gwas_val %>%
+  filter(TEST == "ADD") %>%
+  filter(!is.na(P)) %>%
+  arrange(P) # Ordenamos por mejor p-valor primero
+
+# 3. Pre-selección para el clumping
+# Cogemos los primeros 500 para asegurarnos de que, tras limpiar por cercanía, nos queden 50
+top_candidatos <- gwas_clean %>%
+  head(500) %>%
+  arrange(CHR, BP) # Para el clumping necesitamos orden genómico
+
+# 4. Aplicar lógica de Clumping (Locus de 500.000 pb)
+clumped_val <- top_candidatos %>%
+  group_by(CHR) %>%
+  mutate(
+    # Si el SNP está a más de 500kb del anterior, es un nuevo locus
+    is_new_locus = ifelse(is.na(lag(BP)) | (BP - lag(BP) > 500000), 1, 0),
+    locus_id = cumsum(is_new_locus)
+  ) %>%
+  group_by(CHR, locus_id) %>%
+  # De cada grupo (locus), nos quedamos con el "Lead SNP" (el de menor P)
+  filter(P == min(P)) %>%
+  slice(1) %>% # En caso de empate técnico
+  ungroup() %>%
+  # Volvemos a ordenar por P-valor para sacar los mejores globales
+  arrange(P) %>%
+  head(50)
+clumped_val
+```
+
+# Creacion de snps rgionales 500
+
+```{r}
+# 1. Leemos el archivo
+hits <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/TOP_SNPS_soloPB.txt", header = FALSE)
+
+# 2. Verificamos qué hay dentro (esto te imprimirá las primeras filas en la consola)
+print("Así se ven tus datos:")
+head(hits)
+
+# 3. Creamos el rango usando V2 (siendo la segunda columna la posición)
+regiones <- data.frame(
+  Chr = hits$V1,
+  Start = ifelse(hits$V2 - 500000 < 0, 0, hits$V2 - 500000),
+  End = hits$V2 + 500000,
+  Label = paste0("Region_Chr", hits$V1, "_", hits$V2)
+)
+
+# 4. Guardamos
+write.table(regiones,"R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/RANGOS_TOP_sNPS.txt", 
+            row.names = FALSE, col.names = FALSE, quote = FALSE, sep = "\t")
+
+print("¡Archivo creado con éxito en RANGOS_TOP_sNPS!")
+head(regiones)
+```
+
+```{r}
+# Leer resultados
+res <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/gwas_regional_ajustado.assoc.logistic", header = TRUE)
+
+# 1. Filtrar solo los resultados del SNP (PLINK pone 'ADD' en la columna TEST para el modelo aditivo)
+res_snps <- res[res$TEST == "ADD", ]
+
+# 2. Ordenar por p-valor (los más significativos primero)
+res_ordenado <- res_snps[order(res_snps$P), ]
+
+# 3. Ver los 20 mejores
+head(res_ordenado, 20)
+
+# 4. ¿Hay alguno con P < 0.05?
+significativos <- res_ordenado[res_ordenado$P < 0.05, ]
+print(paste("Has encontrado", nrow(significativos), "SNPs con p-valor < 0.05 en las regiones de interés"))
+```
+
+##cOMPARACION auc DE SOLO GENETICO VS GENETICO+CLINICO
+
+```{r}
+###############################################################
+# COMPARATIVA TRIPLE: CLÍNICA vs GENÉTICA vs INTEGRADO
+###############################################################
+
+# 1. Definir variables genéticas (los 17 SNPs con sus efectos HET)
+vars_geneticas <- setdiff(labels(terms(modelo_integrado)), vars_clinicas)
+
+# 2. Entrenar modelo SOLO GENÉTICO en Entrenamiento (Europeos)
+formula_genetica <- as.formula(paste("covid_persistente ~", paste(vars_geneticas, collapse=" + ")))
+modelo_genetico <- glm(formula_genetica, data = df_train, family = binomial)
+
+# 3. Predecir en SARA usando solo genética
+df_valid$prob_genetica <- predict(modelo_genetico, newdata = df_valid, type = "response")
+
+# 4. Calcular AUC del modelo genético
+roc_genetico <- roc(df_valid$target, df_valid$prob_genetica)
+auc_g <- auc(roc_genetico)
+
+# 5. RESULTADOS COMPARATIVOS
+cat("\n============================================\n")
+cat("ANÁLISIS DE CAPACIDAD PREDICTIVA (SARA)\n")
+cat("============================================\n")
+cat("AUC Modelo SOLO CLÍNICO:  ", round(auc_c, 4), "\n")
+cat("AUC Modelo SOLO GENÉTICO: ", round(auc_g, 4), "\n")
+cat("AUC Modelo INTEGRADO:      ", round(auc_i, 4), "\n")
+cat("============================================\n")
+
+# 6. GRÁFICA TRIPLE
+plot(roc_clinico, col="red", lwd=2, main="Comparativa de Modelos en Validación")
+lines(roc_genetico, col="green", lwd=2)
+lines(roc_integrado, col="blue", lwd=2)
+legend("bottomright", 
+       legend=c(paste("Clínica (AUC =", round(auc_c, 2), ")"), 
+                paste("Genética (AUC =", round(auc_g, 2), ")"),
+                paste("Combinado (AUC =", round(auc_i, 2), ")")), 
+       col=c("red", "green", "blue"), lwd=2)
+```
+
+## mODELO
+
+```{r}
+# 1. Cargar Genotipos (.raw generado por PLINK)
+geno <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/validacion_snps.raw", header = TRUE)
+
+# 2. Cargar Clínicas de Validación
+clinica <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt", header = TRUE)
+
+# 3. Unir ambos por ID (asegúrate de que las columnas FID o IID coinciden)
+# Suponiendo que en clinica la columna de ID se llama 'IID'
+data_val <- merge(clinica, geno, by = "IID")
+
+# 4. Definir la lista de tus 17 SNPs (usa los nombres que aparecen en data_val, suelen terminar en _A o _T)
+# Ejemplo: snps_nombres <- c("rs1671164_A", "rs2748081_G", ...) 
+# Para ir rápido, puedes usar grep si todos los SNPs de entrenamiento están en el archivo:
+mis_snps <- names(geno)[7:ncol(geno)] # Saltamos las primeras 6 columnas de info de PLINK
+
+# 5. EL MODELO FINAL (Replicando tu entrenamiento)
+# IMPORTANTE: Cambia 'LC_VAL' por el nombre de tu columna de Long Covid en validación
+formula_val <- as.formula(paste("long_covid ~ sexo + edad_final + edad2 +  tabaquismo  + edad_sexo + uci + asintomatico + Diabetes + obesidad + heart_disease+ EPOC +", 
+                          paste(mis_snps, collapse = " + ")))
+
+modelo_validacion <- glm(formula_val, data = data_val, family = "binomial")
+
+# 6. VER RESULTADOS
+res_val <- summary(modelo_validacion)$coefficients
+or_val <- exp(res_val[,1])
+p_val <- res_val[,4]
+
+tabla_validacion <- data.frame(OR = or_val, P = p_val)
+print(tabla_validacion)
+
+
+tabla_validacion
+```
+
+#  5.Metaanalisis
+
+```{r}
+# ==========================================================
+# BLOQUE COMPLETO PARA META-ANÁLISIS (SARA - LONG COVID)
+# ==========================================================
+
+# 1. Función robusta para calcular BETA y SE
+preparar_para_meta <- function(df) {
+  df$OR <- as.numeric(df$OR)
+  df$P <- as.numeric(df$P)
+  df$P[df$P >= 1] <- 0.9999
+  df$P[df$P <= 0] <- 1e-300
+  df$BETA <- log(df$OR)
+  df$SE <- abs(df$BETA / qnorm(df$P / 2, lower.tail = FALSE))
+  return(df)
+}
+
+# 2. Limpieza de los objetos de Entrenamiento y Validación
+# Extraemos solo las filas que parecen ser resultados genéticos
+df_e <- entrenamiento_tab[grep("rs|chr|[0-9]", entrenamiento_tab$SNP), ]
+df_v <- validacion_tab[grep("rs|chr|[0-9]", validacion_tab$SNP), ]
+
+# 3. CREAR LA LLAVE MAESTRA (ID_JOIN)
+bim_val_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/imputacion_R2_08_plink_maf_01.bim"
+
+if(file.exists(bim_val_path)){
+  bim <- read.table(bim_val_path, header=F)
+  colnames(bim) <- c("CHR", "RSID", "M", "BP", "A1", "A2")
+  bim$ID_JOIN <- paste0(bim$CHR, "_", bim$BP)
+  
+  # Traducir Validación (de rsID a Posición)
+  df_v <- merge(df_v, bim[,c("RSID", "ID_JOIN")], by.x="SNP", by.y="RSID")
+} else {
+  # Si no hay BIM, intentamos extraer posición del nombre
+  df_v$ID_JOIN <- gsub("chr", "", df_v$SNP)
+  df_v$ID_JOIN <- sapply(strsplit(df_v$ID_JOIN, "_"), function(x) paste(x[1], x[2], sep="_"))
+}
+
+# Limpiar Entrenamiento (siempre suele venir como chr_pos_alelo)
+df_e$ID_JOIN <- gsub("chr", "", df_e$SNP)
+df_e$ID_JOIN <- sapply(strsplit(df_e$ID_JOIN, "_"), function(x) paste(x[1], x[2], sep="_"))
+
+# 4. Cálculo de BETA y SE
+df_e <- preparar_para_meta(df_e)
+df_v <- preparar_para_meta(df_v)
+
+# 5. UNIÓN (MERGE)
+meta_data <- merge(df_e, df_v, by="ID_JOIN", suffixes=c("_E", "_V"))
+
+# 6. CÁLCULO ESTADÍSTICO (VARIANZA INVERSA)
+if(nrow(meta_data) > 0) {
+  w_e <- 1 / (meta_data$SE_E^2)
+  w_v <- 1 / (meta_data$SE_V^2)
+  
+  meta_data$BETA_META <- (meta_data$BETA_E * w_e + meta_data$BETA_V * w_v) / (w_e + w_v)
+  meta_data$SE_META   <- sqrt(1 / (w_e + w_v))
+  meta_data$Z_META    <- meta_data$BETA_META / meta_data$SE_META
+  meta_data$P_META    <- 2 * pnorm(abs(meta_data$Z_META), lower.tail = FALSE)
+  meta_data$OR_META   <- exp(meta_data$BETA_META)
+  
+  # RESULTADO FINAL
+  meta_final <- meta_data[order(meta_data$P_META), 
+                          c("ID_JOIN", "OR_E", "P_E", "OR_V", "P_V", "OR_META", "P_META")]
+  
+  print("--- META-ANÁLISIS COMPLETADO CON ÉXITO ---")
+  print(meta_final)
+} else {
+  print("ERROR: Sigue saliendo 0 SNPs. Revisa si entrenamiento y validación usan el mismo Genome Build (hg19 vs hg38)")
+  print("Ejemplo ID Entrenamiento:")
+  print(head(df_e$ID_JOIN, 2))
+  print("Ejemplo ID Validación:")
+  print(head(df_v$ID_JOIN, 2))
+}
+
+meta_final
+```
+
+### fOREST pLOT
+
+```{r}
+###############################################################
+# GENERACIÓN DE FOREST PLOT PARA EL TFM
+###############################################################
+
+library(forestplot)
+library(dplyr)
+
+# 1. Preparamos los datos de tus 5 mejores SNPs (P_META < 0.05)
+# Nota: Calculamos SE aproximado como |log(OR)| / 1.96 si no lo tienes
+datos_plot <- data.frame(
+  snp = c("rs507551", "rs2748081", "rs11775779", "rs34316881", "rs2570558"),
+  # Valores Entrenamiento (E)
+  or_e = c(2.64, 0.59, 0.57, 3.86, 1.06),
+  # Valores Validación (V)
+  or_v = c(1.31, 0.82, 0.79, 1.68, 1.40),
+  # Valores Meta-análisis (M)
+  or_m = c(1.71, 0.71, 0.73, 2.08, 1.34)
+)
+
+# 2. Estructura para el Forest Plot (Ejemplo para el mejor SNP: rs507551)
+# Repite este bloque o haz un loop para los demás
+base_data <- tibble(
+  mean  = c(NA, 2.64, 1.31, 1.71),
+  lower = c(NA, 2.10, 0.95, 1.40), # Límites inferiores (estimados)
+  upper = c(NA, 3.30, 1.80, 2.10), # Límites superiores (estimados)
+  study = c("SNP rs507551", "Entrenamiento", "Validación", "Meta-análisis"),
+  OR_p  = c("OR (p-val)", "2.64 (<0.001)", "1.31 (0.171)", "1.71 (0.0006)")
+)
+
+base_data %>%
+  forestplot(labeltext = c(study, OR_p),
+             clip = c(0.1, 4),
+             xlog = TRUE, 
+             col = fpColors(box = "royalblue", line = "darkblue", summary = "orange")) %>%
+  fp_add_header(study = "Estudio", OR_p = "OR (p-valor)") %>%
+  fp_set_style(box = "black", line = "black", summary = "red")
+```
