@@ -1,0 +1,512 @@
+---
+title: "Validacion"
+author: "sara sanchez"
+date: "2026-04-28"
+output: html_document
+---
+# 1. Valido los 17 snps de discovery en VALIDACION
+
+### Por si acaso bubiera algun indv sin clinico para el validacion
+
+PRimero me quedo solo cona quellos genotipos de los que tenemos clinicas
+```{r}
+library(readr)
+library(dplyr)
+library(broom)
+
+# Definir rutas
+path_clinica <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt"
+path_genetica_base <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+path_lista_snps <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/17_SNPs_para_extraer.txt"
+
+# 1. Cargar Base de Datos Clínica
+df_clinica <- read_tsv(path_clinica)
+
+# Crear lista de IDs para filtrar el archivo genético (FID e IID)
+# Esto asegura que PLINK solo procese a la gente que tienes en clínica
+df_ids <- df_clinica %>% select(FID, IID)
+write.table(df_ids, "temp_ids.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+### PLINK para extraer la info de esos SNPS top de la discovery cohort
+Es decir, me quedo solo conla info genetica de los 17 snps encontradosen discovery:
+```{r}
+plink_path <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+
+system(paste0(plink_path, 
+              " --bfile \"", path_genetica_base, "\"",
+              " --extract \"", path_lista_snps, "\"",
+              " --keep temp_ids.txt",
+              " --recode A --out genotipos_extraidos"))
+df_geno <- read.table("genotipos_extraidos.raw", header = TRUE, check.names = FALSE)
+```
+
+
+### union clinica + genotipos de los 17 snps
+```{r}
+# --- LIMPIEZA DE NOMBRES ---
+# En los .raw, PLINK añade "_A" (el alelo contado) al final del nombre del SNP
+names(df_geno) <- gsub(":", "_", names(df_geno))
+names(df_geno) <- gsub("-", "_", names(df_geno))
+
+# Quitar columnas redundantes de PLINK
+df_geno_clean <- df_geno %>% select(-IID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 3. Unir por FID
+df_total <- inner_join(df_clinica, df_geno_clean, by = "FID")
+
+# --- GESTIÓN DE VARIABLES ---
+# Definimos las variables según tus nuevos nombres
+vars_clinicas <- c("long_covid","sexo", "edad_final", "edad2", "tabaquismo", "edad_sexo", 
+                   "uci", "asintomatico", "Diabetes", "obesidad", "heart_disease", "EPOC")
+
+# Identificar automáticamente las columnas de los SNPs (las que sobran tras quitar FID y clínicas)
+vars_snps <- setdiff(names(df_geno_clean), "FID")
+
+# Limpiar NAs (Vital para el GLM)
+df_modelo_final <- df_total %>%
+  select(long_covid, all_of(vars_clinicas), all_of(vars_snps)) %>%
+  na.omit()
+
+names(df_modelo_final)
+nrow(df_modelo_final$long_covid)
+```
+
+## Modelo predictivo 17 SNPS+ covar+confus
+```{r}
+# 4. Preparar la fórmula
+formula_final <- as.formula(
+  paste("long_covid ~", paste(c(vars_clinicas, vars_snps), collapse = " + "))
+)
+
+# 5. Ejecutar la Regresión Logística
+modelo_integrado <- glm(formula_final, data = df_modelo_final, family = binomial)
+
+# 6. Resultados con Odds Ratios y errores estándar
+resultados_modelo <- tidy(modelo_integrado, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(p.value)
+
+resultados_modelo
+
+# (Opcional) Guardar resultados
+# write_csv(resultados_modelo, "resultados_modelo_long_covid.csv")
+```
+
+### Comprobacion de que el efecto del CHR12 es opuesto a discovery 
+
+```{r}
+# Para ver cuántos casos y controles tienes y si el alelo G es frecuente
+table(df_modelo_final$long_covid) 
+summary(df_modelo_final$chr12_117848446_G_A_G)
+
+# Sustituye 'df_modelo_final' por el nombre de cada uno de tus dataframes
+df_modelo_final %>%
+  group_by(long_covid) %>%
+  summarise(
+    n = n(),
+    media_alelo_G = mean(chr12_117848446_G_A_G, na.rm = TRUE)
+  )
+```
+
+
+# 2.Modelo pred pero solo con top 5 SNPS (LO MISMO)
+
+```{r}
+# 1. Definir los SNPs específicos de interés (corrigiendo el formato para R)
+snps_seleccionados <- c(
+  "chr19_55079231_G_A_G", 
+  "chr12_117848446_G_A_G", 
+  "chr8_11440198_T_C_C", 
+  "chr1_228807336_C_T_C", 
+  "chr1_47518167_G_A_A"
+)
+
+# 2. Preparar el dataframe filtrando solo esos SNPs y las clínicas
+df_geno_filtrado <- df_geno %>%
+  rename_with(~ gsub(":", "_", .x)) %>%
+  rename_with(~ gsub("-", "_", .x)) %>%
+  dplyr::select(FID, any_of(snps_seleccionados))
+
+# 3. Unir con clínica y limpiar NAs
+df_modelo_reducido <- df_clinica %>%
+  inner_join(df_geno_filtrado, by = "FID") %>%
+  dplyr::select(long_covid, all_of(vars_clinicas), any_of(snps_seleccionados)) %>%
+  na.omit()
+
+# Verificar cuántos individuos quedan tras el filtro de NAs
+print(paste("Individuos en el modelo final:", nrow(df_modelo_reducido)))
+
+# 4. Crear la fórmula solo con los 5 SNPs
+formula_reducida <- as.formula(
+  paste("long_covid ~", paste(c(vars_clinicas, snps_seleccionados), collapse = " + "))
+)
+
+# 5. Ejecutar el Modelo Logístico
+modelo_5_snps <- glm(formula_reducida, data = df_modelo_reducido, family = binomial)
+
+# 6. Extraer resultados (Odds Ratios y P-valores)
+resultados_5_snps <- tidy(modelo_5_snps, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  filter(term %in% snps_seleccionados) %>% # Nos centramos en ver los SNPs
+  arrange(p.value)
+
+# Mostrar resultados
+print(resultados_5_snps)
+
+# --- Comprobación rápida del efecto del CHR12 en este subconjunto ---
+df_modelo_reducido %>%
+  group_by(long_covid) %>%
+  summarise(
+    n = n(),
+    media_chr12 = mean(chr12_117848446_G_A_G, na.rm = TRUE)
+  )
+```
+
+# 3.Modelo CRUDO solo en VALIDACION con confusora
+
+```{r}
+plink_path <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+bfile_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+clinica_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA.txt"
+output_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_Crudo_VAL/GWAS_VALIDACION_AJUSTADO_CONFUSORAS"
+
+cmd <- paste(
+  shQuote(plink_path),
+  "--bfile", shQuote(bfile_path),
+  "--keep temp_ids.txt",
+  "--pheno", shQuote(clinica_path),
+  "--pheno-name long_covid",
+  "--covar", shQuote(clinica_path),
+  "--covar-name sexo,edad_final,edad2,edad_sexo",
+  "--logistic hide-covar",
+  "--ci 0.95",
+  "--1",
+  "--allow-no-sex",
+  "--missing-var-code NA",
+  "--out", shQuote(output_path)
+)
+
+system(cmd)
+```
+
+
+## Comparacion con crudo de DISCOVERy vs validacion
+```{r}
+library(dplyr)
+library(readr)
+
+# 1. Definir rutas de los archivos .assoc.logistic
+path_res_disc <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic"
+path_res_val  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_Crudo_VAL/GWAS_VALIDACION_AJUSTADO_CONFUSORAS.assoc.logistic"
+
+# 2. Leer archivos (PLINK usa espacios en blanco como separador)
+disc <- read.table(path_res_disc, header = TRUE, stringsAsFactors = FALSE) %>%
+  filter(TEST == "ADD") %>%
+  dplyr::select(SNP, CHR, A1, OR_Disc = OR, P_Disc = P)
+
+val <- read.table(path_res_val, header = TRUE, stringsAsFactors = FALSE) %>%
+  filter(TEST == "ADD") %>%
+  dplyr::select(SNP, A1_Val = A1, OR_Val = OR, P_Val = P)
+
+# 3. Unir ambos resultados por el nombre del SNP
+# Usamos inner_join para ver solo los que están en ambos
+comparativa <- inner_join(disc, val, by = "SNP")
+
+# 4. OBTENER LOS TOP HITS
+# Top 20 por P-valor en Discovery
+top_discovery <- comparativa %>%
+  arrange(P_Disc) %>%
+  head(20) %>%
+  mutate(Origen = "Top Discovery")
+
+# Top 20 por P-valor en Validación
+top_validacion <- comparativa %>%
+  arrange(P_Val) %>%
+  head(20) %>%
+  mutate(Origen = "Top Validación")
+
+# 5. Combinar y limpiar tabla final
+tabla_final <- bind_rows(top_discovery, top_validacion) %>%
+  distinct(SNP, .keep_all = TRUE) %>% # Evitar duplicados si un SNP es top en ambos
+  mutate(
+    # Alerta visual si los alelos A1 no coinciden (el OR sería inverso)
+    Check_Alelo = ifelse(A1 == A1_Val, "OK", "REVERSO"),
+    P_Disc = format.pval(P_Disc, digits = 3),
+    P_Val = format.pval(P_Val, digits = 3)
+  ) %>%
+  dplyr::select(SNP, CHR, A1, Check_Alelo, OR_Disc, P_Disc, OR_Val, P_Val, Origen)
+
+# Mostrar la tablat
+tabla_final
+
+# Opcional: Guardar a CSV para abrir en Excel
+# write_csv(tabla_final, "Comparativa_Discovery_Validacion_Top.csv")
+```
+
+
+# 4.METAANALISIS (GWAS CRUDO VAL + GWAS CRUDO DISC)
+
+```{r}
+library(dplyr)
+library(metafor)
+
+# 1. CARGA DE DATOS (Tus rutas ya conocidas)
+path_res_disc <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic"
+path_res_val  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_Crudo_VAL/GWAS_VALIDACION_AJUSTADO_CONFUSORAS.assoc.logistic"
+
+disc <- read.table(path_res_disc, header = TRUE) %>% filter(TEST == "ADD")
+val  <- read.table(path_res_val, header = TRUE) %>% filter(TEST == "ADD")
+
+# 2. UNIR Y ALINEAR (Paso previo necesario para cualquier paquete)
+meta_df <- inner_join(
+  disc %>% dplyr::select(SNP, A1, OR_disc = OR, STAT_disc = STAT),
+  val  %>% dplyr::select(SNP, A1_val = A1, OR_val = OR, STAT_val = STAT),
+  by = "SNP"
+) %>%
+  mutate(
+    yi_disc = log(OR_disc),
+    sei_disc = abs(yi_disc / STAT_disc),
+    yi_val_raw = log(OR_val),
+    sei_val = abs(yi_val_raw / STAT_val),
+    # Alineamos: si el alelo es distinto, invertimos el efecto
+    yi_val = ifelse(A1 == A1_val, yi_val_raw, -yi_val_raw)
+  ) %>%
+  filter(!is.na(sei_disc) & !is.na(sei_val))
+
+```
+
+# 
+
+```{r}
+library(dplyr)
+
+# 1. Realizar el Meta-análisis (unificado y limpio)
+meta_df_calculado <- inner_join(
+  disc %>% dplyr::select(SNP, CHR, BP, A1, OR_disc = OR, STAT_disc = STAT, P_disc = P),
+  val  %>% dplyr::select(SNP, A1_val = A1, OR_val = OR, STAT_val = STAT, P_val = P),
+  by = "SNP"
+) %>%
+  mutate(
+    yi_disc = log(OR_disc),
+    sei_disc = abs(yi_disc / STAT_disc),
+    yi_val_raw = log(OR_val),
+    sei_val = abs(yi_val_raw / STAT_val),
+    yi_val = ifelse(A1 == A1_val, yi_val_raw, -yi_val_raw)
+  ) %>%
+  filter(!is.na(sei_disc) & sei_disc > 0, !is.na(sei_val) & sei_val > 0) %>%
+  mutate(
+    w_disc = 1 / (sei_disc^2),
+    w_val  = 1 / (sei_val^2),
+    beta_meta = (yi_disc * w_disc + yi_val * w_val) / (w_disc + w_val),
+    se_meta   = sqrt(1 / (w_disc + w_val)),
+    p_meta    = 2 * pnorm(-abs(beta_meta / se_meta)),
+    OR_meta   = exp(beta_meta)
+  )
+
+# 2. LIMPIEZA: Quitar CHR 22 y aplicar Clumping por proximidad (LD-proxy)
+cat("Filtrando CHR 22 y aplicando clumping por proximidad (500kb)...\n")
+
+meta_final_limpio <- meta_df_calculado %>%
+  filter(CHR != 22) %>%                # Eliminar Cromosoma 22
+  arrange(CHR, BP) %>%                 # Ordenar por posición genómica
+  group_by(CHR) %>%                    # Agrupar por cromosoma para comparar distancias
+  mutate(
+    # Calculamos la distancia con el SNP anterior
+    distancia = BP - lag(BP, default = 0),
+    # Marcamos si está en una ventana de 500,000 pares de bases del anterior
+    proximal = ifelse(distancia < 500000, TRUE, FALSE)
+  ) %>%
+  arrange(p_meta) %>%                  # Priorizamos los más significativos
+  distinct(CHR, round(BP / 500000), .keep_all = TRUE) %>% # Nos quedamos con el mejor por cada ventana de 500kb
+  dplyr::select(SNP, CHR, BP, A1, OR_disc, P_disc, OR_val, P_val, OR_meta, p_meta) %>%
+  arrange(p_meta)
+
+# 3. RESULTADOS FINALES
+print(head(meta_final_limpio, 20))
+
+# Guardar la tabla limpia para tu tesis
+write.csv(meta_final_limpio, "Metanalisis_de_valYdiscCRUDOS.csv", row.names = FALSE)
+
+meta_final_limpio
+```
+
+```{r}
+# Filtrar la fila que contiene esa posición específica en el nombre del SNP
+fila_especifica <- meta_final_limpio %>%
+  filter(grepl("71389313", SNP))
+
+# Ver el resultado
+print(fila_especifica)
+
+
+# Extraer la fila específica del SNP en Chr 3, posición ~117.7 Mb
+snp_top_1 <- meta_final_limpio %>%
+  filter(CHR == 9 & BP >= 71389313 - 25000 & BP <= 71389313 + 25000)
+
+# Ver los datos
+print(snp_top_1)
+```
+# 5.Rsumen: snps mas altos en ambas: val y discv
+```{r}
+
+library(dplyr)
+
+# ==============================================================================
+# PASO 1: CARGAR LAS COHORTES AJUSTADAS (R BASE PARA EVITAR COLUMNA X13)
+# ==============================================================================
+path_res_disc <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic"
+path_res_val  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_Crudo_VAL/GWAS_VALIDACION_AJUSTADO_CONFUSORAS.assoc.logistic"
+
+gwas_disc_completo <- read.table(path_res_disc, header = TRUE, stringsAsFactors = FALSE) %>% 
+  dplyr::filter(TEST == "ADD")
+
+gwas_val_completo  <- read.table(path_res_val, header = TRUE, stringsAsFactors = FALSE) %>% 
+  dplyr::filter(TEST == "ADD")
+
+
+# ==============================================================================
+# PASO 2: TOP 15 DISCOVERY PURO (CON TODOS SUS SNPS CERCANOS/EN LD SI CORRESPONDE)
+# ==============================================================================
+top15_discovery <- gwas_disc_completo %>%
+  dplyr::filter(CHR != 22) %>%
+  # Ordenamos por p-valor de menor a mayor (los más significativos primero)
+  dplyr::arrange(P) %>%
+  # Nos quedamos con los 15 mejores absolutos de Discovery (sin importar si están juntos)
+  dplyr::slice_head(n = 15) %>%
+  dplyr::select(CHR, SNP, BP, A1, OR_Disc = OR, P_Disc = P, L95_Disc = L95, U95_Disc = U95) %>%
+  # Buscamos qué valor tuvieron exactamente en Validación
+  dplyr::inner_join(
+    gwas_val_completo %>% 
+      dplyr::select(SNP, A1_Val = A1, OR_Val = OR, P_Val = P, L95_Val = L95, U95_Val = U95),
+    by = "SNP"
+  ) %>%
+  dplyr::mutate(Origen_Top = "Top15_Discovery")
+
+
+# ==============================================================================
+# PASO 3: TOP 15 VALIDACIÓN PURO (CON TODOS SUS SNPS CERCANOS/EN LD SI CORRESPONDE)
+# ==============================================================================
+top15_validacion <- gwas_val_completo %>%
+  dplyr::filter(CHR != 22) %>%
+  # Ordenamos por p-valor en la cohorte de Validación
+  dplyr::arrange(P) %>%
+  # Nos quedamos con los 15 mejores absolutos de Validación
+  dplyr::slice_head(n = 15) %>%
+  dplyr::select(CHR, SNP, BP, A1_Val = A1, OR_Val = OR, P_Val = P, L95_Val = L95, U95_Val = U95) %>%
+  # Buscamos qué valor tuvieron exactamente en Discovery
+  dplyr::inner_join(
+    gwas_disc_completo %>% 
+      dplyr::select(SNP, A1, OR_Disc = OR, P_Disc = P, L95_Disc = L95, U95_Disc = U95),
+    by = "SNP"
+  ) %>%
+  dplyr::mutate(Origen_Top = "Top15_Validacion")
+
+
+# ==============================================================================
+# PASO 4: UNIFICAR EN UNA SOLA TABLA FINAL ESPEJO
+# ==============================================================================
+tabla_espejo_final <- dplyr::bind_rows(top15_discovery, top15_validacion) %>%
+  # Si un SNP es tan bueno que es Top 15 en ambos lados, dejamos una sola fila para no duplicar datos
+  dplyr::distinct(SNP, .keep_all = TRUE) %>%
+  # Estructuramos el orden de las columnas para poder comparar cómodamente en paralelo
+  dplyr::select(Origen_Top, CHR, SNP, BP, A1, A1_Val,
+                OR_Disc, P_Disc, L95_Disc, U95_Disc,
+                OR_Val, P_Val, L95_Val, U95_Val) %>%
+  # Alerta por si el alelo de referencia cambió entre los dos análisis de PLINK
+  dplyr::mutate(Alerta_Alelo = dplyr::if_else(A1 != A1_Val, "Revisar (Invertido)", "OK")) %>%
+  # Ordenación final por el p-valor de Discovery para su visualización
+  dplyr::arrange(P_Disc)
+
+
+# ==============================================================================
+# PASO 5: REPORTE EN PANTALLA Y GUARDADO DEL CSV
+# ==============================================================================
+cat("\n==================================================================\n")
+cat(" TABLA CONJUNTA DE TOP 15 COMPLETA (Sin filtros de distancia/LD ni umbrales):\n")
+cat(" Total de filas en la tabla:", nrow(tabla_espejo_final), "\n")
+cat("==================================================================\n")
+
+print(table(tabla_espejo_final$Origen_Top))
+
+# Abrir el visor interactivo de RStudio
+View(tabla_espejo_final)
+
+# Guardar en tu ruta de red el CSV definitivo sin restricciones
+ruta_salida_libre <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/TABLA_CONJUNTA_TOP15_SIN_RESTRICCIONES.csv"
+#write.csv(tabla_Espejo_final <- tabla_espejo_final, file = ruta_salida_libre, row.names = FALSE)
+
+#print("¡Hecho! Tu tabla sin umbrales ni bloqueos por distancia física ha sido generada.")
+
+```
+
+
+```{r}
+library(dplyr)
+
+# Definimos el umbral simultáneo para todo el GWAS (1e-3 = 0.001, que es -log10(P) > 3)
+umbral_p_gwas <- 1e-3
+
+# ==============================================================================
+# PASO 1: CARGAR LAS COHORTES AJUSTADAS 
+# ==============================================================================
+path_res_disc <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_CRUDO_confusoras/GWAS_AJUSTADO_CONFUSORAS.assoc.logistic"
+path_res_val  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_Crudo_VAL/GWAS_VALIDACION_AJUSTADO_CONFUSORAS.assoc.logistic"
+
+cat("Cargando cohorte Discovery...\n")
+gwas_disc_completo <- read.table(path_res_disc, header = TRUE, stringsAsFactors = FALSE) %>% 
+  dplyr::filter(TEST == "ADD")
+
+cat("Cargando cohorte Validación...\n")
+gwas_val_completo  <- read.table(path_res_val, header = TRUE, stringsAsFactors = FALSE) %>% 
+  dplyr::filter(TEST == "ADD")
+
+
+# ==============================================================================
+# PASO 2: CRUZAR TODO EL GWAS Y FILTRAR SIMULTÁNEAMENTE CON P < 1e-3
+# ==============================================================================
+cat("Cruzando y filtrando todo el genoma por p-valor simultáneo...\n")
+
+gwas_simultaneo_completo <- gwas_disc_completo %>%
+  # Excluimos cromosoma 22 si sigues prefiriendo dejarlo fuera
+  dplyr::filter(CHR != 22) %>%
+  dplyr::select(CHR, SNP, BP, A1, OR_Disc = OR, P_Disc = P, L95_Disc = L95, U95_Disc = U95) %>%
+  
+  # Cruzamos con la cohorte de Validación completa
+  dplyr::inner_join(
+    gwas_val_completo %>% 
+      dplyr::filter(CHR != 22) %>%
+      dplyr::select(SNP, A1_Val = A1, OR_Val = OR, P_Val = P, L95_Val = L95, U95_Val = U95),
+    by = "SNP"
+  ) %>%
+  
+  # CONDICIÓN ESTRICTA SIMULTÁNEA: P < 0.001 en los DOS sitios a la vez
+  dplyr::filter(P_Disc < umbral_p_gwas & P_Val < umbral_p_gwas) %>%
+  
+  # Control de la dirección del alelo
+  dplyr::mutate(Alerta_Alelo = dplyr::if_else(A1 != A1_Val, "Revisar (Invertido)", "OK")) %>%
+  
+  # Ordenamos todo el listado genómico por el p-valor de Discovery
+  dplyr::arrange(P_Disc)
+
+
+# ==============================================================================
+# PASO 3: REPORTE DE RESULTADOS Y GUARDADO DEL ARCHIVO GLOBAL
+# ==============================================================================
+cat("\n==================================================================\n")
+cat(" RESULTADO DEL BARRIDO GLOBAL DEL GWAS (P < 1e-3 Simultáneo):\n")
+cat(" Total de SNPs que cumplen la condición en todo el genoma:", nrow(gwas_simultaneo_completo), "\n")
+cat("==================================================================\n")
+
+
+if (nrow(gwas_simultaneo_completo) < 50000) {
+  View(gwas_simultaneo_completo)
+} else {
+  cat("Aviso: El archivo contiene demasiadas filas para visualizarlo cómodamente en RStudio, revísalo en el CSV.\n")
+}
+
+ruta_salida_global <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/GWAS_COMPLETO_SIMULTANEO_P1e3.csv"
+#write.csv(gwas_simultaneo_completo, file = ruta_salida_global, row.names = FALSE)
+
+```
+
