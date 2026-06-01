@@ -1,14 +1,14 @@
 Genetic Determinants and Phenotypic Heterogeneity of Long COVID;  
 A Genome-Wide Association Study in a 2020-2021 Spanish Cohort
 
-1. Exploracion:
+1. Exploracion incial:
    - Exploratory Data Analysis
    - Data Transformation
    - Missigness and imputation
    - MCA
    - EFA
 
-2. GWAS crudo
+2. GWAS crudo con confusoras y metanalisis
    - Output visualisation of GWAS performed with plink
    - Metanalisis
 
@@ -17,12 +17,12 @@ A Genome-Wide Association Study in a 2020-2021 Spanish Cohort
    - Comparation of logistic models
    - Metaanalysis
 
-4. Megaanlysis
+4. Megaanlisis
    - Discovery and validation data merge
    - PLINK output GWAS visualisation
    -  Manhattan plots
 
-5. Patient stratification
+5. Patient's stratification
    - Clustering
    - LCA
    - EFA across LCA
