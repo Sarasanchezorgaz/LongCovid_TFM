@@ -1,0 +1,2750 @@
+---
+title: "CLUSTERING"
+author: "sara sanchez"
+date: "2026-05-04"
+output: html_document
+---
+
+# Lectura cohorte de discovery
+
+```{r}
+library(cluster)
+library(dplyr)
+library(factoextra)
+library(ggplot2)
+
+# 1. CARGA Y FILTRADO
+df_discovery <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt", header = TRUE, sep = "\t")
+nrow(df_discovery)
+df_cases <- df_discovery %>% 
+  filter(covid_persistente == 1) # Nos quedamos solo con casos
+nrow(df_cases)
+
+# 2. SELECCIÓN DE VARIABLES
+#gravedad_vars <- c("hospitalizacion", "uci", "asintomatico", "num_syms_s1_real", "num_syms_s13_real")
+# comorb_vars <- c("hipertension_arterial", "hipercolesterolemia", "diabetes", "obesidad", 
+                #  "cardiopatia_isquemica", "aritmia_cardiaca", "enfermedad_cerebrovascular",
+                 # "otra_enfermedad_neurologica", "epoc", "otra_enfermedad_respiratoria_cronica",
+                #  "hepatopatia", "tumor_solido", "enfermedad_renal")
+sint_s13 <- c("fiebre_long_s13", "vomitos_long_s13", "astenia_long_s13", "disnea_long_s13", 
+              "dolor_torax_long_s13", "tos_long_s13", "dolor_articular_long_s13", 
+              "mialgia_long_s13", "cefalea_long_s13", "diarrea_long_s13", "afonia_long_s13", 
+              "anosmia_long_s13", "disgeusia_long_s13", "niebla_mental_s13", 
+              "insomnio_s13")
+```
+
+# Confirmacion existencia subfenotipos
+
+```{r}
+library(qgraph)
+# Opción limpia con dplyr
+datos_num <- datos_para_clúster %>% 
+  mutate(across(everything(), ~ as.numeric(as.character(.))))
+
+# Ahora la correlación sí funcionará
+cor_sintomas <- cor(datos_num, method = "pearson")
+
+library(qgraph)
+qgraph(cor_sintomas, 
+       layout = "spring", 
+       labels = colnames(datos_num),
+       vsize = 7, 
+       theme = "classic",
+       title = "Conexiones entre Síntomas COVID")
+```
+
+#0.LCA 
+## 0.1. Creacion LCA y metricas
+
+```{r}
+library(poLCA)     # Para el LCA
+library(tidyr)     # Para replace_na y pivot_longer
+library(dplyr)     # Para mutate, filter y select
+library(ggplot2)   # Para los gráficos
+library(FactoMineR)# Para el MCA
+library(data.table)# Para leer los resultados de PLINK rápid
+names(df_cases)
+sint_s13 <- c("fiebre_long_s13", "vomitos_long_s13", "astenia_long_s13", "disnea_long_s13", 
+              "dolor_torax_long_s13", "tos_long_s13", "dolor_articular_long_s13", 
+              "mialgia_long_s13", "cefalea_long_s13", "diarrea_long_s13", "afonia_long_s13", 
+              "anosmia_long_s13", "disgeusia_long_s13", "Niebla_mental_s13", 
+              "insomnio_s13")
+datos_para_clúster <- df_cases %>%
+  dplyr::select(all_of(sint_s13)) %>%
+mutate(across(everything(), ~replace_na(., 0)))
+# 1. Convertimos los 0/1 en 1/2
+datos_lca <- datos_para_clúster %>%
+  mutate(across(everything(), ~ as.numeric(as.character(.)) + 1))
+
+# 2. Creamos la fórmula (metemos todos tus síntomas de la lista sint_s13)
+f <- as.formula(paste("cbind(", paste(sint_s13, collapse = ","), ") ~ 1"))
+
+
+# Probamos modelos de 2, 3 y 4 clases
+lca2 <- poLCA(f, datos_lca, nclass=2, nrep=10, verbose=FALSE)
+lca3 <- poLCA(f, datos_lca, nclass=3, nrep=10, verbose=FALSE)
+lca4 <- poLCA(f, datos_lca, nclass=4, nrep=10, verbose=FALSE)
+lca5 <- poLCA(f, datos_lca, nclass=5, nrep=10, verbose=FALSE)
+
+# Comparamos el BIC (el número más pequeño gana)
+print(paste("BIC 2 grupos:", lca2$bic))
+print(paste("BIC 3 grupos:", lca3$bic))
+print(paste("BIC 4 grupos:", lca4$bic))
+print(paste("BIC 5 grupos:", lca5$bic))
+```
+
+```{r}
+# Para ver el ajuste puro (cuanto más alto/menos negativo, mejor ajusta)
+print(paste("Log-likelihood 2 grupos:", lca2$llik))
+print(paste("Log-likelihood 3 grupos:", lca3$llik))
+print(paste("Log-likelihood 4 grupos:", lca4$llik))
+print(paste("Log-likelihood 5 grupos:", lca5$llik))
+```
+
+## 0.2.Frecuencias
+
+```{r}
+# Mira cuántos pacientes hay en cada grupo del de 4
+table(lca4$predclass)
+```
+
+```{r}
+# Imagina que el mejor es lca3
+plot(lca4)
+```
+## Medias de cada sintoma por grupo
+
+```{r}
+library(dplyr)
+library(tidyr)
+df_lca <- read.table(
+  "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenotipos_lca_gwas.txt",
+  header = TRUE,
+  sep = "\t"
+)
+# Definimos los síntomas
+sint_s13 <- c(
+  "fiebre_long_s13", "vomitos_long_s13", "astenia_long_s13", 
+  "disnea_long_s13", "dolor_torax_long_s13", "tos_long_s13", 
+  "dolor_articular_long_s13", "mialgia_long_s13", "cefalea_long_s13", 
+  "diarrea_long_s13", "afonia_long_s13", "anosmia_long_s13", 
+  "disgeusia_long_s13", "Niebla_mental_s13", "insomnio_s13"
+)
+
+# 1. Calculamos el total de idnv por clase
+tabla_conteo <- df_lca %>%
+  group_by(clase_lca) %>%
+  summarise(total_idnv = n())
+
+# 2. Calculamos la media (proporción) de cada síntoma por clase
+tabla_sintomas <- df_lca %>%
+  group_by(clase_lca) %>%
+  summarise(across(all_of(sint_s13), ~mean(.x, na.rm = TRUE) * 100))
+
+# 3. Combinamos ambas para tener la vista final
+resultado_final <- tabla_conteo %>%
+  left_join(tabla_sintomas, by = "clase_lca")
+
+# Ver el resultadov
+resultado_final
+```
+EN TABLA BONITA:
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1. Asegurarnos de que el df_lca tenga una columna de clase 
+# (si tu modelo guardó las clases en un vector, añádelo así):
+df_lca$Clase <- df_lca$clase_lca
+# 1. Calcular el tamaño de cada clase (n)
+tamanos_clase <- df_lca %>%
+  group_by(Clase) %>%
+  summarise(n = n()) %>%
+  mutate(label_x = paste0("Class ", Clase, "\n(n=", n, ")"))
+
+# 2. Calcular la frecuencia real y unirla con la etiqueta del eje X
+perfil_real <- df_lca %>%
+  group_by(Clase) %>%
+  summarise(across(all_of(sint_s13), ~mean(.x, na.rm = TRUE) * 100)) %>%
+  pivot_longer(-Clase, names_to = "Sintoma", values_to = "Prevalencia") %>%
+  left_join(tamanos_clase, by = "Clase") # Unimos para tener la etiqueta con la 'n'
+
+# 3. Limpieza de nombres de síntomas
+perfil_real$Sintoma <- gsub("_long_s13|_s13", "", perfil_real$Sintoma)
+perfil_real$Sintoma <- gsub("_", " ", perfil_real$Sintoma)
+
+# 4. Gráfico con el nuevo título y etiquetas de eje X personalizadas
+ggplot(perfil_real, aes(x = label_x, y = reorder(Sintoma, Prevalencia), fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "#B22222") + # Mantenemos rojo original
+  geom_text(aes(label = paste0(round(Prevalencia, 0), "%")), 
+            size = 3.5, 
+            fontface = "bold",
+            color = ifelse(perfil_real$Prevalencia > 50, "white", "black")) +
+  theme_minimal() +
+  labs(title = "Symptom Prevalence Profile by LCA Phenotype",
+       subtitle = "Observed frequencies in the discovery cohort",
+       x = "LCA Classes",
+       y = "Symptoms",
+       fill = "% prevalence") +
+  theme(axis.text.x = element_text(face = "bold", size = 10),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+
+## 0.3. Grafico lineas colores
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+df_lca <- read.table(
+  "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenotipos_lca_gwas.txt",
+  header = TRUE,
+  sep = "\t"
+)
+
+
+# Aplicamos el orden 
+df_lca$Clase <- factor(df_lca$clase_lca)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+
+# 2. Preparamos los datos: pasamos de ancho a largo para las líneas
+# Esto calcula la media (probabilidad) por cada síntoma y cada clase
+perfil_lineas <- df_lca %>%
+  group_by(Clase) %>%
+  summarise(across(all_of(sint_s13), ~mean(.x, na.rm = TRUE))) %>%
+  pivot_longer(-Clase, names_to = "Sintoma", values_to = "Probabilidad")
+
+# 3. Limpieza de nombres de síntomas para el eje X
+perfil_lineas$Sintoma <- gsub("_long_s13|_s13", "", perfil_lineas$Sintoma)
+perfil_lineas$Sintoma <- gsub("_", " ", perfil_lineas$Sintoma)
+
+# 4. Gráfico de líneas (Perfil de Subfenotipos)
+ggplot(perfil_lineas, aes(x = Sintoma, y = Probabilidad, group = Clase, color = Clase)) +
+  geom_line(size = 1) +      # Línea de color
+  geom_point(size = 3) +     # Puntos en los síntomas
+  theme_minimal() +
+  labs(title = "Subphenotypes in Discovery Cohort",
+       x = "Symptoms",
+       y = "Probability",
+       color = "Subphenotypes") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9), # Rotar etiquetas para que se lean
+        legend.position = "bottom") +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1)) # Escala de 0 a 1
+```
+PROB ESPERADAS
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+# 1. Extraemos las probabilidades de cada síntoma para cada clase
+# poLCA guarda esto en $probs. Queremos la probabilidad del nivel 2 (presencia del síntoma)
+probs_lca <- lca4$probs
+
+# Creamos una tabla con la prevalencia por clase
+perfil_lca <- sapply(probs_lca, function(x) x[, 2] * 100) %>%
+  as.data.frame() %>%
+  mutate(Clase = factor(1:4)) %>%
+  pivot_longer(-Clase, names_to = "Sintoma", values_to = "Prevalencia")
+
+# 2. Limpieza de nombres de síntomas 
+perfil_lca$Sintoma <- gsub("_long_s13|_s13", "", perfil_lca$Sintoma)
+perfil_lca$Sintoma <- gsub("_", " ", perfil_lca$Sintoma)
+
+# 3. Gráfico de Heatmap
+ggplot(perfil_lca, aes(x = Clase, y = reorder(Sintoma, Prevalencia), fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "#B22222") + # Rojo intenso para los picos
+  geom_text(aes(label = paste0(round(Prevalencia, 0), "%")), 
+            size = 3.5, 
+            fontface = "bold",
+            color = ifelse(perfil_lca$Prevalencia > 50, "white", "black")) +
+  theme_minimal() +
+  labs(title = "Symptom Probability Profile by LCA",
+       subtitle = paste("Discovery Cohort, N=512"),
+       x = "Class",
+       y = "Symptoms",
+       fill = "% probability") +
+  theme(axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(size = 10))
+```
+
+##0.4.Mapa MCA putnos 
+```{r}
+# 1. Cargamos librerías
+library(ggforce)
+library(FactoMineR)
+library(ggplot2)
+library(dplyr)
+
+
+# Preparamos las coordenadas
+coord_ind <- as.data.frame(res_mca$ind$coord[, 1:2])
+coord_ind$Clase_LCA <- factor(lca4$predclass)
+
+# 2. Gráfico sin las líneas de etiquetas
+ggplot(coord_ind, aes(x = `Dim 1`, y = `Dim 2`, color = Clase_LCA, fill = Clase_LCA)) +
+  # Quitamos 'label = Clase_LCA' para eliminar las líneas negras y los números
+  geom_mark_hull(concavity = 5, 
+                 expand = unit(2, "mm"), 
+                 alpha = 0.2, 
+                 color = NA,       # Esto quita el borde de la sombra si lo deseas
+                 show.legend = FALSE) +
+  # Puntos con formas distintas para cada subfenotipo
+  geom_point(aes(shape = Clase_LCA), alpha = 0.8, size = 2) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal() +
+  labs(title = "LCA Plot",
+       x = paste0("Dim 1 (", round(res_mca$eig[1,2], 1), "%)"),
+       y = paste0("Dim 2 (", round(res_mca$eig[2,2], 1), "%)"),
+       color = "Subfenotipo",
+       shape = "Subfenotipo",
+       fill = "Subfenotipo") +
+  theme(legend.position = "right",
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+# Función para calcular Entropía en poLCA
+entropy <- function (p) {
+  p <- p[p > 0]
+  return (-sum(p * log(p)))
+}
+
+# Calculamos la entropía relativa
+error_prior <- entropy(lca4$P)
+error_post <- mean(apply(lca4$posterior, 1, entropy))
+lca_entropy <- (error_prior - error_post) / error_prior
+
+print(paste("Entropía del modelo LCA:", round(lca_entropy, 3)))
+```
+
+## 0.4.Media de SNPs(17) por clase
+
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1. Carga y limpieza de IDs
+genos_raw <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/Genotipos_17_SNPs.raw")
+genos_df <- as.data.frame(genos_raw)
+genos_df$IID <- trimws(as.character(genos_df$IID))
+
+clinica_df <- as.data.frame(df_cases)
+clinica_df$IID <- trimws(as.character(clinica_df$IID))
+clinica_df$Clase_LCA <- factor(lca4$predclass)
+
+data_final <- merge(genos_df, clinica_df[, c("IID", "Clase_LCA")], by = "IID")
+
+# 2. SELECCIÓN ESTRICTA: Solo columnas con alelos, eliminando las que tengan "HET"
+# Esto limpia el ruido de PLINK
+cols_snps <- names(data_final)[grepl("_[A-TGC]$|_[A-TGC]_", names(data_final))]
+cols_snps <- cols_snps[!grepl("HET", cols_snps)] 
+
+# 3. Resumen y cálculo de porcentajes
+resumen_genetico <- data_final %>%
+  group_by(Clase_LCA) %>%
+  summarise(across(all_of(cols_snps), ~ mean(. > 0, na.rm = TRUE) * 100), .groups = "drop") %>%
+  pivot_longer(cols = -Clase_LCA, names_to = "SNP_Raw", values_to = "Porcentaje")
+
+# 4. Limpieza de nombres para que el gráfico sea legible
+resumen_genetico <- resumen_genetico %>%
+  mutate(
+    # Quitamos el alelo final para que el nombre del SNP sea más corto
+    SNP_Clean = gsub("_[A-TGC]$|_[A-TGC]_.*", "", SNP_Raw),
+    # Mapeo de tus 4 clases específicas
+    Clase_Label = case_when(
+      Clase_LCA == 1 ~ "1: ASTENICOS y DISNEA",
+      Clase_LCA == 2 ~ "2: DOLOR FISICO",
+      Clase_LCA == 3 ~ "3: SENSORIAL",
+      Clase_LCA == 4 ~ "4: LEVES",
+      TRUE ~ as.character(Clase_LCA)
+    )
+  )
+
+# 5. GRÁFICO FINAL 
+ggplot(resumen_genetico, aes(x = Clase_Label, y = SNP_Clean, fill = Porcentaje)) +
+  geom_tile(color = "white", lwd = 0.4) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#238B45") + 
+  geom_text(aes(label = sprintf("%.1f%%", Porcentaje)), 
+            size = 3, 
+            fontface = "bold") +
+  theme_minimal(base_size = 11) +
+  labs(title = "Perfil Genético por Fenotipo Clínico (LCA)",
+       subtitle = "% Portadores del Alelo de Riesgo ",
+       x = NULL, 
+       y = "Variante Genética (SNP)", 
+       fill = "% Port.") +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1, face = "bold", color = "black"),
+    axis.text.y = element_text(size = 8, family = "mono"),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+
+## 0.5.mEIDA snps (11)
+
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1. Carga y limpieza de IDs
+genos_raw <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/bbdd_genotipos_top11.raw")
+genos_df <- as.data.frame(genos_raw)
+head(genos_df)
+genos_df$IID <- trimws(as.character(genos_df$IID))
+
+clinica_df <- as.data.frame(df_cases)
+clinica_df$IID <- trimws(as.character(clinica_df$IID))
+clinica_df$Clase_LCA <- factor(lca4$predclass)
+
+data_final <- merge(genos_df, clinica_df[, c("IID", "Clase_LCA")], by = "IID")
+
+# 2. SELECCIÓN ESTRICTA: Solo columnas con alelos, eliminando las que tengan "HET"
+# En lugar de filtrar por letras finales, quitamos las columnas que NO son SNPs
+cols_no_snp <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE", "Clase_LCA")
+cols_snps <- setdiff(names(data_final), cols_no_snp)
+
+cols_snps <- cols_snps[!grepl("HET", cols_snps)]
+
+# 3. Resumen y cálculo de porcentajes
+resumen_genetico <- data_final %>%
+  group_by(Clase_LCA) %>%
+  summarise(across(all_of(cols_snps), ~ mean(. > 0, na.rm = TRUE) * 100), .groups = "drop") %>%
+  pivot_longer(cols = -Clase_LCA, names_to = "SNP_Raw", values_to = "Porcentaje")
+
+# 4. Limpieza de nombres mejorada
+resumen_genetico <- resumen_genetico %>%
+  mutate(
+    # Quitamos cualquier sufijo después del último "_" (el alelo contado)
+    SNP_Clean = sub("_[^_]+$", "", SNP_Raw),
+    Clase_Label = case_when(
+      Clase_LCA == 1 ~ "1: ASTENICOS",
+      Clase_LCA == 2 ~ "2: DOLOR FISICO",
+      Clase_LCA == 3 ~ "3: SENSORIAL",
+      Clase_LCA == 4 ~ "4: LEVES",
+      TRUE ~ as.character(Clase_LCA)
+    )
+  )
+
+# 5. GRÁFICO FINAL
+ggplot(resumen_genetico, aes(x = Clase_Label, y = SNP_Clean, fill = Porcentaje)) +
+  geom_tile(color = "white", lwd = 0.4) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#238B45") + 
+  geom_text(aes(label = sprintf("%.1f%%", Porcentaje)), 
+            size = 3, 
+            fontface = "bold") +
+  theme_minimal(base_size = 11) +
+  labs(title = "Perfil Genético por Fenotipo Clínico (LCA)",
+       subtitle = paste("% Portadores del Alelo de Riesgo (Total SNPs detectados:", length(unique(resumen_genetico$SNP_Clean)), ")"),
+       x = NULL, 
+       y = "Variante Genética (SNP)", 
+       fill = "% Port.") +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1, face = "bold", color = "black"),
+    axis.text.y = element_text(size = 8, family = "mono"),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+## 0.6. Media de SNPS (3) POR CLASE
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+# ==========================================
+# 1. Carga y limpieza de datos genéticos nuevos
+# ==========================================
+# Cargamos el archivo .raw recién extraído por PLINK
+genos_raw <- fread("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/genotipo_3_snps_genes.raw")
+genos_df <- as.data.frame(genos_raw)
+
+# Limpieza del identificador de muestra
+genos_df$IID <- trimws(as.character(genos_df$IID))
+
+# ==========================================
+# 2. Carga y preparación de la clínica
+# ==========================================
+clinica_df <- as.data.frame(df_cases)
+clinica_df$IID <- trimws(as.character(clinica_df$IID))
+
+# Asignación del factor
+clinica_df$Clase_LCA <- factor(lca4$predclass)
+
+# Cruzamos ambos datasets por la columna común IID
+data_final <- merge(genos_df, clinica_df[, c("IID", "Clase_LCA")], by = "IID")
+
+# ==========================================
+# 3. Identificación de las variantes genéticas
+# ==========================================
+cols_no_snp <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE", "Clase_LCA")
+cols_snps <- setdiff(names(data_final), cols_no_snp)
+
+# Quitamos posibles fallos de llamadas de PLINK (como HET)
+cols_snps <- cols_snps[!grepl("HET", cols_snps)]
+
+
+
+# ==========================================
+# 4. Cálculo de porcentajes de portadores y Tamaños Muestrales (N)
+# ==========================================
+# Calculamos la N total por cada grupo clínico 
+tabla_conteos <- data_final %>%
+  group_by(Clase_LCA) %>%
+  summarise(N_Grupo = n(), .groups = "drop")
+
+
+print("--- COMPROBACIÓN DE NÚMERO DE PACIENTES POR CLÚSTER ---")
+print(tabla_conteos)
+print("-------------------------------------------------------")
+
+# Agrupamos para los porcentajes del gráfico
+resumen_genetico <- data_final %>%
+  group_by(Clase_LCA) %>%
+  summarise(across(all_of(cols_snps), ~ mean(. > 0, na.rm = TRUE) * 100), .groups = "drop") %>%
+  pivot_longer(cols = -Clase_LCA, names_to = "SNP_Raw", values_to = "Porcentaje")
+
+# Unimos los porcentajes con sus respectivas N
+resumen_genetico <- resumen_genetico %>%
+  left_join(tabla_conteos, by = "Clase_LCA")
+
+# ==========================================
+# 5. Limpieza de etiquetas e inyección de N en los nombres
+# ==========================================
+resumen_genetico <- resumen_genetico %>%
+  mutate(
+    # Limpieza de los nombres de los SNPs
+    SNP_Clean = sub("_[^_]+$", "", SNP_Raw),
+    SNP_Clean = gsub("\\.", ":", SNP_Clean),
+    
+    # Asignamos el nombre base según el clúster
+    Clase_Base = case_when(
+      Clase_LCA == 1 ~ "1: LEVE",
+      Clase_LCA == 2 ~ "2: AST-DIS",
+      Clase_LCA == 3 ~ "3: DOLOR-RESP",
+      Clase_LCA == 4 ~ "4: SENS",
+      TRUE ~ paste("Clase", Clase_LCA)
+    ),
+    
+    # Creamos la etiqueta final combinando el Nombre + su N real
+    Clase_Label_Con_N = paste0(Clase_Base, "\n(N = ", N_Grupo, ")")
+  )
+
+# ==========================================
+# 6. Gráfico Final con N en el Eje X
+# ==========================================
+ggplot(resumen_genetico, aes(x = Clase_Label_Con_N, y = SNP_Clean, fill = Porcentaje)) +
+  geom_tile(color = "white", lwd = 0.5) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#1e6b33") + 
+  geom_text(aes(label = sprintf("%.1f%%", Porcentaje)), 
+            size = 3.5, 
+            fontface = "bold") +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Distribución de Variantes Genéticas por Clúster Clínico",
+    subtitle = "Frecuencia de portadores del alelo minoritario/riesgo",
+    x = "Fenotipos Clínicos de Long Covid (LCA)",
+    y = "Cromosoma y Posición Física (SNP)",
+    fill = "% Portadores"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5, face = "bold", color = "black"), # Al incluir salto de línea (\n), 0 grados suele verse más ordenado
+    axis.text.y = element_text(family = "mono", face = "bold", size = 10),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey40")
+  )
+```
+
+## 0.7. Valoracion GENES en cada grupo
+### CRYBG1
+```{r}
+plink_path <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+bfile_base  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+file_salida <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_CRYBG1"
+
+
+# '--recode A' genera el archivo de texto con los SNPs en formato 0, 1, 2 automáticamente
+
+comando_plink <- paste0(
+  '"', plink_path, '"',
+  ' --bfile "', bfile_base, '"',
+  ' --chr 6 --from-bp 106360717 --to-bp 106572017',
+  ' --recode A --out "', file_salida, '"'
+)
+# Ejecutar el comando en el sistema desde R
+system(comando_plink)
+```
+```{r}
+# ==============================================================================
+# SCRIPT DE INTEGRACIÓN: CLÍNICA + GENÉTICA AUTOMATIZADA (CRYBG1)
+# ==============================================================================
+library(data.table)
+library(ggplot2)
+library(dplyr)
+table(df_analisis$Clase_LCA)
+df_discovery <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt", header = TRUE, sep = "\t")
+df_cases <- df_discovery %>% filter(covid_persistente == 1)
+
+# 2. CARGAR LOS GENOTIPOS FILTRADOS EN EL PASO ANTERIOR
+ruta_genotipos <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_CRYBG1.raw" 
+df_geno <- fread(ruta_genotipos)
+
+# ==============================================================================
+# PASO 3: FUSIONAR CLÍNICA Y GENÉTICA POR EL ID DEL PACIENTE
+# ==============================================================================
+
+
+df_analisis <- merge(df_cases, df_geno, by.x = "IID", by.y = "IID")
+print(paste("Pacientes acoplados con éxito para el análisis:", nrow(df_analisis)))
+
+# ==============================================================================
+# PASO 4:DETECTAR Y SUMAR LOS SNPS AUTOMÁTICAMENTE
+# ==============================================================================
+# Buscamos todas las columnas que empiecen por "chr6:" o contengan la estructura genómica.
+
+
+columnas_snps <- grep("chr6:", names(df_analisis), value = TRUE)
+print(paste("Se han detectado", length(columnas_snps), "SNPs dentro del gen CRYBG1."))
+
+# Calculamos el Score Genético sumando los alelos de riesgo de todos esos SNPs por paciente.
+# Usamos na.rm = TRUE por si a algún paciente le falta el dato de algún SNP concreto.
+df_analisis$Score_CRYBG1 <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+# ==============================================================================
+# PASO 5: LA REGRESIÓN ESTADÍSTICA (MEDIR INFLUENCIA EN TUS CLÚSTERES)
+# ==============================================================================
+
+ df_cases$Clase_LCA <- factor(lca4$predclass)
+# 2. Hacemos el MERGE AHORA (así df_analisis heredará la columna Clase_LCA)
+df_analisis <- merge(df_cases, df_geno, by.x = "IID", by.y = "IID")
+
+# 3. Buscamos los SNPs y calculamos el Score en la nueva tabla
+columnas_snps <- grep("chr6:", names(df_analisis), value = TRUE)
+df_analisis$Score_CRYBG1 <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+
+names(df_analisis)
+# 4. Corremos la regresión 
+modelo_final <- lm(Score_CRYBG1 ~ Clase_LCA , data = df_analisis)
+summary(modelo_final)
+
+
+
+# ==============================================================================
+# PASO 6: GRÁFICO AUTOMÁTICO EN ALTA RESOLUCIÓN 
+# ==============================================================================
+colores_clusters <- c("#2b8cbe", "#fec44f", "#de2d26","#bec44f") 
+
+grafico_final <- ggplot(df_analisis, aes(x = Clase_LCA, y = Score_CRYBG1, fill = Clase_LCA)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.4, color = "black", size = 1.5) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Carga Genética Acumulada en CRYBG1 (AIM1) por Clúster Clínico",
+    subtitle = paste("Análisis conjunto de", length(columnas_snps), "SNPs en Chromosoma 6"),
+    x = "Clúster Clínico (Casos Long Covid)",
+    y = "Genetic Score (Suma de Alelos de Riesgo)"
+  ) +
+  scale_fill_manual(values = colores_clusters) +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+print(grafico_final)
+```
+
+
+```{r}
+# 1. Creamos una variable nueva: 1 si es del Clúster 4 (Digestivo), 0 si es de cualquier otro
+df_analisis$Es_Digestivo <- ifelse(df_analisis$Clase_LCA == 1, 1, 0)
+
+# 2. Corremos una Regresión Logística (family = binomial)
+modelo_logistico <- glm(Es_Digestivo ~ Score_CRYBG1, data = df_analisis, family = binomial)
+
+# 3. Vemos los resultados
+summary(modelo_logistico)
+```
+```{r}
+# 1. Creamos una tabla vacía para guardar los resultados de cada SNP
+resultados_individuales <- data.frame(SNP = character(), 
+                                      P_Valor = numeric(), 
+                                      Efecto = numeric(), 
+                                      stringsAsFactors = FALSE)
+
+# 2. Corremos el bucle para analizar los SNPs uno a uno contra el Clúster 4
+for (snp in columnas_snps) {
+  # Creamos la fórmula dinámica protegiendo el nombre del SNP con comillas invertidas
+  formula_snp <- as.formula(paste("Es_Digestivo ~ `", snp, "`", sep = ""))
+  
+  # Ejecutamos la regresión logística para ese SNP en concreto
+  posible_modelo <- tryCatch({
+    glm(formula_snp, data = df_analisis, family = binomial)
+  }, error = function(e) NULL)
+  
+  # Si el modelo corrió bien, extraemos su p-valor y su efecto (Estimate)
+  if (!is.null(posible_modelo)) {
+    summary_mod <- summary(posible_modelo)
+    if (nrow(summary_mod$coefficients) >= 2) {
+      p_val <- summary_mod$coefficients[2, 4]
+      efecto <- summary_mod$coefficients[2, 1]
+      
+      resultados_individuales <- rbind(resultados_individuales, 
+                                       data.frame(SNP = snp, P_Valor = p_val, Efecto = efecto))
+    }
+  }
+}
+
+# 3. Ordenamos la tabla de menor a mayor p-valor para ver tus "joyas de la corona"
+resultados_individuales <- resultados_individuales[order(resultados_individuales$P_Valor), ]
+
+# 4. Imprimimos los 10 mejores SNPs en pantalla
+head(resultados_individuales, 10)
+```
+```{r}
+# Test no paramétrico para comparar las dosis del SNP entre TODOS los clústeres a la vez
+matriz_comparativa <- pairwise.wilcox.test(
+  x = df_analisis$`chr6:106525438:T:C_C`, 
+  g = df_analisis$Clase_LCA, 
+  p.adjust.method = "none" # "none" para ver los p-valores brutos cara a cara
+)
+
+# Imprimir la matriz en la consola
+print(matriz_comparativa)
+```
+```{r}
+table(df_analisis$Clase_LCA)
+```
+
+
+### FAM
+chr8:11,421,463-11,475,908
+```{r}
+plink_path <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+bfile_base  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+file_salida <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_FAM"
+
+# Creamos el comando PLINK nativo para extraer por coordenadas
+
+comando_plink <- paste0(
+  '"', plink_path, '"',
+  ' --bfile "', bfile_base, '"',
+  ' --chr 8 --from-bp 11421463 --to-bp 11475908',
+  ' --recode A --out "', file_salida, '"'
+)
+# Ejecutar el comando en el sistema desde R
+system(comando_plink)
+```
+```{r}
+# ==============================================================================
+# SCRIPT DE INTEGRACIÓN: CLÍNICA + GENÉTICA AUTOMATIZADA (CRYBG1)
+# ==============================================================================
+library(data.table)
+library(ggplot2)
+library(dplyr)
+
+df_discovery <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt", header = TRUE, sep = "\t")
+df_cases <- df_discovery %>% filter(covid_persistente == 1)
+
+# 2. CARGAR LOS GENOTIPOS FILTRADOS EN EL PASO ANTERIOR
+ruta_genotipos <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_FAM.raw" 
+df_geno <- fread(ruta_genotipos)
+
+# ==============================================================================
+# PASO 3: FUSIONAR CLÍNICA Y GENÉTICA POR EL ID DEL PACIENTE
+# ==============================================================================
+
+df_analisis <- merge(df_cases, df_geno, by.x = "IID", by.y = "IID")
+print(paste("Pacientes acoplados con éxito para el análisis:", nrow(df_analisis)))
+
+# ==============================================================================
+# PASO 4: DETECTAR Y SUMAR LOS SNPS AUTOMÁTICAMENTE
+# ==============================================================================
+
+
+columnas_snps <- grep("chr8:", names(df_analisis), value = TRUE)
+print(paste("Se han detectado", length(columnas_snps), "SNPs dentro del gen FAM."))
+
+# Calculamos el Score Genético sumando los alelos de riesgo de todos esos SNPs por paciente.
+
+df_analisis$Score_FAM <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+# ==============================================================================
+# PASO 5: LA REGRESIÓN ESTADÍSTICA (MEDIR INFLUENCIA EN TUS CLÚSTERES)
+# ==============================================================================
+
+
+ df_cases$Clase_LCA <- factor(lca4$predclass)
+# 2. Hacemos el MERGE AHORA (así df_analisis heredará la columna Clase_LCA)
+df_analisis <- merge(df_cases, df_geno, by.x = "IID", by.y = "IID")
+
+# 3. Buscamos los SNPs y calculamos el Score en la nueva tabla
+columnas_snps <- grep("chr8:", names(df_analisis), value = TRUE)
+df_analisis$Score_FAM <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+
+names(df_analisis)
+# 4. Corremos la regresión 
+modelo_final <- lm(Score_FAM ~ Clase_LCA + edad_final + sexo, data = df_analisis)
+summary(modelo_final)
+
+
+
+# ==============================================================================
+# PASO 6: GRÁFICO AUTOMÁTICO EN ALTA RESOLUCIÓN 
+# ==============================================================================
+colores_clusters <- c("#2b8cbe", "#fec44f", "#de2d26","#bec44f") # Cambia o añade colores según tus clústeres
+
+grafico_final <- ggplot(df_analisis, aes(x = Clase_LCA, y = Score_FAM, fill = Clase_LCA)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.4, color = "black", size = 1.5) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Carga Genética Acumulada en CRYBG1 (AIM1) por Clúster Clínico",
+    subtitle = paste("Análisis conjunto de", length(columnas_snps), "SNPs en Chromosoma 8"),
+    x = "Clúster Clínico (Casos Long Covid)",
+    y = "Genetic Score (Suma de Alelos de Riesgo)"
+  ) +
+  scale_fill_manual(values = colores_clusters) +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+# Pintar el gráfico en tu pantalla de RStudio
+print(grafico_final)
+```
+### LRCH1
+13:46,553,168-46,753,041
+
+```{r}
+plink_path <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+bfile_base  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+file_salida <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_LRCH1"
+
+# '--recode A' genera el archivo de texto con los SNPs en formato 0, 1, 2 automáticamente
+
+comando_plink <- paste0(
+  '"', plink_path, '"',
+  ' --bfile "', bfile_base, '"',
+  ' --chr 13 --from-bp 46553168 --to-bp 46753041',
+  ' --recode A --out "', file_salida, '"'
+)
+# Ejecutar el comando en el sistema desde R
+system(comando_plink)
+```
+```{r}
+# ==============================================================================
+# SCRIPT DE INTEGRACIÓN: CLÍNICA + GENÉTICA AUTOMATIZADA (CRYBG1)
+# ==============================================================================
+library(data.table)
+library(ggplot2)
+library(dplyr)
+
+df_discovery <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt", header = TRUE, sep = "\t")
+df_cases <- df_discovery %>% filter(covid_persistente == 1)
+
+# 2. CARGAR LOS GENOTIPOS FILTRADOS EN EL PASO ANTERIOR
+ruta_genotipos <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_LRCH1.raw" 
+df_geno <- fread(ruta_genotipos)
+
+# ==============================================================================
+# PASO 3: FUSIONAR CLÍNICA Y GENÉTICA POR EL ID DEL PACIENTE
+# ==============================================================================
+
+
+df_analisis <- merge(df_cases, df_geno, by.x = "IID", by.y = "IID")
+print(paste("Pacientes acoplados con éxito para el análisis:", nrow(df_analisis)))
+
+# ==============================================================================
+# PASO 4: DETECTAR Y SUMAR LOS SNPS AUTOMÁTICAMENTE
+# ==============================================================================
+
+columnas_snps <- grep("chr13:", names(df_analisis), value = TRUE)
+print(paste("Se han detectado", length(columnas_snps), "SNPs dentro del gen LRCH1."))
+
+# Calculamos el Score Genético sumando los alelos de riesgo de todos esos SNPs por paciente.
+# Usamos na.rm = TRUE por si a algún paciente le falta el dato de algún SNP concreto.
+df_analisis$Score_LRCH1 <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+# ==============================================================================
+# PASO 5: LA REGRESIÓN ESTADÍSTICA 
+# ==============================================================================
+
+ df_cases$Clase_LCA <- factor(lca4$predclass)
+# 2. Hacemos el MERGE AHORA 
+df_analisis <- merge(df_cases, df_geno, by.x = "IID", by.y = "IID")
+
+# 3. Buscamos los SNPs y calculamos el Score en la nueva tabla
+columnas_snps <- grep("chr13:", names(df_analisis), value = TRUE)
+df_analisis$Score_LRCH1 <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+
+names(df_analisis)
+# 4. Corremos la regresión
+modelo_final <- lm(Score_LRCH1 ~ Clase_LCA + edad_final + sexo, data = df_analisis)
+summary(modelo_final)
+
+
+
+# ==============================================================================
+# PASO 6: GRÁFICO AUTOMÁTICO EN ALTA RESOLUCIÓ
+# ==============================================================================
+colores_clusters <- c("#2b8cbe", "#fec44f", "#de2d26","#bec44f") 
+
+grafico_final <- ggplot(df_analisis, aes(x = Clase_LCA, y = Score_LRCH1, fill = Clase_LCA)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.4, color = "black", size = 1.5) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Carga Genética Acumulada en LRCH1 por Clúster Clínico",
+    subtitle = paste("Análisis conjunto de", length(columnas_snps), "SNPs en Chromosoma 13"),
+    x = "Clúster Clínico (Casos Long Covid)",
+    y = "Genetic Score (Suma de Alelos de Riesgo)"
+  ) +
+  scale_fill_manual(values = colores_clusters) +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+# Pintar el gráfico en tu pantalla de RStudio
+print(grafico_final)
+```
+
+```{r}
+table(df_analisis$Clase_LCA)
+```
+
+```{r}
+# 1. Creamos una variable nueva: 1 si es del Clúster 4 (Digestivo), 0 si es de cualquier otro
+df_analisis$Es_Digestivo <- ifelse(df_analisis$Clase_LCA == 4, 1, 0)
+
+# 2. Corremos una Regresión Logística (family = binomial)
+modelo_logistico <- glm(Es_Digestivo ~ Score_LRCH1+ sexo +edad_final, data = df_analisis, family = binomial)
+
+# 3. Vemos los resultados
+summary(modelo_logistico)
+```
+
+# *LCA con EFA
+```{r}
+# =========================================================
+# RELACION ENTRE EFA (FACTORES LATENTES)
+# Y LAS CLASES DEL LCA
+# =========================================================
+
+# Librerías
+library(psych)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# =========================================================
+# 1. CARGAR DATOS USADOS PARA EL EFA
+# =========================================================
+
+df_discovery <- read.table(
+  "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/bbdd_NA_EUR_1344.txt",
+  header = TRUE,
+  sep = "\t"
+)
+
+# Nos quedamos solo con CASOS
+df_cases <- df_discovery %>%
+  filter(covid_persistente == 1)
+
+# =========================================================
+# 2. VARIABLES DE SINTOMAS S13
+# =========================================================
+
+sint_s13 <- c(
+  "fiebre_long_s13",
+  "vomitos_long_s13",
+  "astenia_long_s13",
+  "disnea_long_s13",
+  "dolor_torax_long_s13",
+  "tos_long_s13",
+  "dolor_articular_long_s13",
+  "mialgia_long_s13",
+  "cefalea_long_s13",
+  "diarrea_long_s13",
+  "afonia_long_s13",
+  "anosmia_long_s13",
+  "disgeusia_long_s13",
+  "Niebla_mental_s13",
+  "insomnio_s13","otro_long_s13"
+)
+
+# =========================================================
+# 3. PREPARAR DATOS PARA EFA
+# =========================================================
+
+datos_EFA <- df_cases %>%
+  dplyr::select(FID, IID, all_of(sint_s13)) %>%
+  mutate(across(all_of(sint_s13), ~replace_na(., 0)))
+
+# =========================================================
+# 4. MATRIZ TETRACORICA
+# =========================================================
+
+matriz_tetra_s13 <- tetrachoric(
+  datos_EFA[, sint_s13]
+)$rho
+
+# =========================================================
+# 5. EJECUTAR EFA
+# =========================================================
+
+n_factores <- 4
+
+afe_s13 <- fa(
+  r = matriz_tetra_s13,
+  nfactors = n_factores,
+  rotate = "oblimin",
+  fm = "minres"
+)
+
+# Ver cargas
+print(afe_s13$loadings, cutoff = 0.1, sort = TRUE)
+
+# =========================================================
+# 6. CALCULAR FACTOR SCORES POR INDIVIDUO
+# =========================================================
+
+factor_scores <- factor.scores(
+  datos_EFA[, sint_s13],
+  afe_s13,
+  method = "Thurstone"
+)
+
+# Convertimos a dataframe
+scores_df <- as.data.frame(factor_scores$scores)
+
+# Añadimos IDs
+scores_df$FID <- datos_EFA$FID
+scores_df$IID <- datos_EFA$IID
+
+# =========================================================
+# 7. CARGAR ARCHIVO CON CLASES LCA
+# =========================================================
+
+df_lca <- read.table(
+  "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenotipos_lca_gwas.txt",
+  header = TRUE,
+  sep = "\t"
+)
+
+# Nos quedamos solo con IDs y clase LCA
+df_lca <- df_lca %>%
+  dplyr::select(FID, IID, clase_lca)
+
+# =========================================================
+# 8. UNIR EFA + LCA
+# =========================================================
+
+df_final <- scores_df %>%
+  left_join(df_lca, by = c("FID", "IID"))
+
+# =========================================================
+# 9. VER MEDIA DE FACTORES POR CLASE LCA
+# =========================================================
+
+tabla_factores <- df_final %>%
+  group_by(clase_lca) %>%
+  summarise(
+    MR1_media = mean(MR1, na.rm = TRUE),
+    MR2_media = mean(MR2, na.rm = TRUE),
+    MR3_media = mean(MR3, na.rm = TRUE),
+    MR4_media = mean(MR4, na.rm = TRUE)
+  )
+
+print(tabla_factores)
+
+# =========================================================
+# 10. TEST ESTADISTICOS
+# =========================================================
+
+# Kruskal-Wallis para cada factor
+kruskal_MR1 <- kruskal.test(MR1 ~ factor(clase_lca), data = df_final)
+kruskal_MR2 <- kruskal.test(MR2 ~ factor(clase_lca), data = df_final)
+kruskal_MR3 <- kruskal.test(MR3 ~ factor(clase_lca), data = df_final)
+kruskal_MR4 <- kruskal.test(MR4 ~ factor(clase_lca), data = df_final)
+
+print(kruskal_MR1)
+print(kruskal_MR2)
+print(kruskal_MR3)
+print(kruskal_MR4)
+
+# =========================================================
+# 11. GRAFICOS
+# =========================================================
+
+
+# 1. Aseguramos que la clase sea un factor
+df_final$clase_lca <- factor(df_final$clase_lca)
+
+# 2. TRANSFORMACIÓN: Convertir a formato largo
+df_long <- df_final %>%
+  pivot_longer(
+    cols = c(MR1, MR2, MR3, MR4),
+    names_to = "Factor",
+    values_to = "Score"
+  )
+
+# 3. Boxplot
+p_invertido <- ggplot(df_long, 
+                      aes(x = Factor, y = Score, fill = Factor)) +
+  geom_boxplot(outlier.alpha = 0.5) +
+  # Paneles por clase
+  facet_wrap(~ clase_lca, scales = "fixed") + coord_cartesian(ylim = c(-2, 8)) + 
+  theme_bw(base_size = 14) +
+  labs(
+    title = "Factor distribution by Latent Classes",
+    subtitle = "Each panel represents a Latent Class",
+    x = "Factors (EFA)",
+    y = "Factor Score"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_invertido)
+
+```
+#### cONTRASTES EFA & LCA
+```{r}
+library(dunn.test)
+library(rstatix)
+factores <- c("MR1", "MR2", "MR3", "MR4")
+
+for (f in factores) {
+  cat("\n=== KRUSKAL-WALLIS: Comparación entre Clases para:", f, "===\n")
+  
+  # Test Kruskal-Wallis
+  kw_res <- kruskal.test(get(f) ~ factor(clase_lca), data = df_final)
+  print(kw_res)
+  
+  # Post-hoc Dunn (con Bonferroni)
+  cat("\nPost-hoc (Dunn): \n")
+  dunn.test(df_final[[f]], g = df_final$clase_lca, method = "bonferroni")
+}
+library(rstatix)
+library(tidyr)
+
+# 1. Asegurar formato largo
+df_long <- df_final %>%
+  pivot_longer(cols = starts_with("MR"), names_to = "Factor", values_to = "Score")
+
+# 2. Análisis por clase
+clases <- unique(df_long$clase_lca)
+
+for (c in clases) {
+  cat("\n==============================================")
+  cat("\n=== FRIEDMAN: Diferencias Intraclase para CLASE:", c, "===\n")
+  
+  datos_clase <- df_long %>% filter(clase_lca == c)
+  
+  # Test de Friedman
+  res_friedman <- datos_clase %>% 
+    friedman_test(Score ~ Factor | IID)
+  print(res_friedman)
+  
+  # Post-hoc Wilcoxon si p < 0.05
+  if(res_friedman$p < 0.05) {
+    cat("\nPost-hoc (Wilcoxon pareado):\n")
+    posthoc <- datos_clase %>% 
+      wilcox_test(Score ~ Factor, paired = TRUE, p.adjust.method = "bonferroni")
+    print(posthoc)
+  }
+}
+```
+
+
+
+```{r}
+# =========================================================
+# RADAR CHART: RELACION ENTRE EFA Y LCA
+# =========================================================
+
+# Instalar si no lo tienes
+# install.packages("fmsb")
+
+library(fmsb)
+library(dplyr)
+
+# =========================================================
+# 1. CALCULAR MEDIAS POR CLASE
+# =========================================================
+
+tabla_radar <- df_final %>%
+  group_by(clase_lca) %>%
+  summarise(
+    Muscresp = mean(MR1, na.rm = TRUE),
+    neurocog = mean(MR2, na.rm = TRUE),
+    gastroWEAK = mean(MR3, na.rm = TRUE),
+    sensitive = mean(MR4, na.rm = TRUE)
+  )
+
+print(tabla_radar)
+
+library(fmsb)
+
+# =========================
+# DATOS
+# =========================
+
+radar_data <- data.frame(
+  Muscresp   = c(3, -1, 1.61, 0.0547, 2.08, -0.869),
+  Neurocog   = c(3, -1, 1.05, 0.445, 0.950, -0.816),
+  GastroWEAK = c(3, -1, 1.06, -0.0483, 0.00366, -0.177),
+  Sensitive  = c(4, -1, 3.13, -0.192, 0.241, -0.537)
+)
+
+rownames(radar_data) <- c(
+  "max", "min",
+  "Class 1",
+  "Class 2",
+  "Class 3",
+  "Class 4"
+)
+
+# =========================
+# COLORES
+# =========================
+
+line_colors <- c(
+  "#D73027",  # rojo
+  "#4575B4",  # azul
+  "#1A9850",  # verde
+  "#984EA3"   # morado
+)
+
+fill_colors <- adjustcolor(line_colors, alpha.f = 0.20)
+
+# =========================
+# PLOT
+# =========================
+
+par(
+  mar = c(2,2,3,2),
+  bg = "white"
+)
+
+radarchart(
+  radar_data,
+
+  axistype = 1,
+
+  pcol = line_colors,
+  pfcol = fill_colors,
+  plwd = 3,
+  plty = 1:4,
+
+  cglcol = "grey80",
+  cglty = 1,
+  cglwd = 0.8,
+
+  axislabcol = "grey40",
+
+  vlcex = 1.2,
+
+  title = "Latent EFA Dimensions Across LCA Classes"
+)
+
+legend(
+  "topright",
+  legend = c("Class 1","Class 2","Class 3","Class 4"),
+  col = line_colors,
+  lty = 1:4,
+  lwd = 3,
+  bty = "n",
+  cex = 1
+)
+```
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+radar_data <- data.frame(
+  Class = c("Class 1","Class 2","Class 3","Class 4"),
+  Muscresp = c(0.80, 0.45, 0.42, 0.40),
+  Neurocog = c(0.65, 0.35, 0.33, 0.31),
+  Sensitive = c(0.40, 0.22, 0.20, 0.19),
+  GastroWEAK = c(0.30, 0.20, 0.19, 0.18)
+)
+
+# Pasar a formato largo
+df_long <- radar_data %>%
+  pivot_longer(
+    cols = -Class,
+    names_to = "Dimension",
+    values_to = "Score"
+  )
+
+# Plot
+ggplot(df_long,
+       aes(x = Dimension,
+           y = Score,
+           group = Class,
+           color = Class)) +
+
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 3) +
+
+  theme_minimal(base_size = 14) +
+
+  labs(
+    title = "Latent EFA Dimensions Across LCA Classes",
+    x = "",
+    y = "Mean Factor Score"
+  ) +
+
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(face = "bold"),
+    legend.position = "right"
+  )
+```
+
+
+# * LCA SIN astenia y mialgia
+
+```{r}
+library(poLCA)     # Para el LCA
+library(tidyr)     # Para replace_na y pivot_longer
+library(dplyr)     # Para mutate, filter y select
+library(ggplot2)   # Para los gráficos
+library(FactoMineR)# Para el MCA
+library(data.table)# Para leer los resultados de PLINK rápid
+names(df_cases)
+sint_s13 <- c("fiebre_long_s13", "vomitos_long_s13", "disnea_long_s13", 
+              "dolor_torax_long_s13", "tos_long_s13", "dolor_articular_long_s13", "cefalea_long_s13", "diarrea_long_s13", "afonia_long_s13", 
+              "anosmia_long_s13", "disgeusia_long_s13", "Niebla_mental_s13", 
+              "insomnio_s13")
+datos_para_clúster <- df_cases %>%
+  dplyr::select(all_of(sint_s13)) %>%
+mutate(across(everything(), ~replace_na(., 0)))
+# 1. Convertimos los 0/1 en 1/2
+datos_lca <- datos_para_clúster %>%
+  mutate(across(everything(), ~ as.numeric(as.character(.)) + 1))
+
+# 2. Creamos la fórmula (metemos todos tus síntomas de la lista sint_s13)
+f <- as.formula(paste("cbind(", paste(sint_s13, collapse = ","), ") ~ 1"))
+
+
+# Probamos modelos de 2, 3 y 4 clases
+lca2 <- poLCA(f, datos_lca, nclass=2, nrep=10, verbose=FALSE)
+lca3 <- poLCA(f, datos_lca, nclass=3, nrep=10, verbose=FALSE)
+lca4 <- poLCA(f, datos_lca, nclass=4, nrep=10, verbose=FALSE)
+lca5 <- poLCA(f, datos_lca, nclass=5, nrep=10, verbose=FALSE)
+
+# Comparamos el BIC (el número más pequeño gana)
+print(paste("BIC 2 grupos:", lca2$bic))
+print(paste("BIC 3 grupos:", lca3$bic))
+print(paste("BIC 4 grupos:", lca4$bic))
+print(paste("BIC 5 grupos:", lca5$bic))
+
+
+
+
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+# 1. Extraer las probabilidades de cada síntoma para cada clase
+# lca4$probs es una lista; queremos la columna 2 (probabilidad de tener el síntoma)
+probs_clases <- sapply(lca4$probs, function(x) x[, 2]) 
+
+# 2. Convertir a dataframe y limpiar nombres
+df_plot <- as.data.frame(probs_clases) %>%
+  mutate(Clase = factor(1:nrow(.))) %>%
+  pivot_longer(-Clase, names_to = "Sintoma", values_to = "Probabilidad")
+
+# Limpiar los nombres de los síntomas para que no quede feo
+df_plot$Sintoma <- gsub("_long_s13|_s13", "", df_plot$Sintoma)
+df_plot$Sintoma <- gsub("_", " ", df_plot$Sintoma)
+
+# 3. Calcular el tamaño de cada clase para la leyenda (%)
+proporciones <- round(lca4$P * 100, 1)
+etiquetas_clases <- paste0("Clase ", 1:4, " (", proporciones, "%)")
+names(etiquetas_clases) <- 1:4
+
+# 4. Crear el gráfico de líneas
+ggplot(df_plot, aes(x = Sintoma, y = Probabilidad, group = Clase, color = Clase)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_color_discrete(labels = etiquetas_clases) + # Aquí metemos los % en la leyenda
+  theme_minimal() +
+  labs(title = "Perfil de Probabilidad por Clase Latente (LCA)",
+       subtitle = "Solución de 4 Clases",
+       x = "Síntomas",
+       y = "Probabilidad de presencia",
+       color = "Subfenotipos") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+        legend.position = "bottom",
+        panel.grid.minor = element_blank())
+```
+
+# 1. CLUST SOLO SINTOMAS S13.
+
+## 1.1.Eleccion K
+
+```{r}
+library(cluster)
+library(factoextra)
+datos_para_clúster <- df_cases[, sint_s13]
+datos_para_clúster <- df_cases %>%
+  dplyr::select(all_of(sint_s13)) %>%
+mutate(across(everything(), ~replace_na(., 0)))        # Eliminamos cualquier fila con NAs
+#  mutate(across(everything(), factor)) # Convertimos todo a Sí/No (Factor)
+dist_gower_sint <- daisy(datos_para_clúster, metric = "gower")
+
+# 2. Gráfico de Silueta para elegir K (Método independiente)
+# Probamos del 2 al 10
+fviz_nbclust(as.matrix(dist_gower_sint), pam, method = "silhouette", k.max = 10) +
+  labs(title = "Silhouette: Over 13 week symtoms") +
+  theme_minimal()
+
+# 3. Gráfico del Codo (WSS)
+fviz_nbclust(as.matrix(dist_gower_sint), pam, method = "wss", k.max = 10) +
+  labs(title = "Elbow: Over 13 week symptoms") +
+  theme_minimal()
+```
+
+## 1.2.Hacer clustering y descriptivos
+
+```{r}
+# 1.
+res_pam_sint <- pam(dist_gower_sint, k = 2)
+
+datos_numericos_grafico <- as.data.frame(lapply(datos_para_clúster, as.numeric))
+
+fviz_cluster(list(data = datos_numericos_grafico, cluster = res_pam_sint$clustering),
+             geom = "point",
+             ellipse.type = "convex",
+             palette = "Set2",
+             ggtheme = theme_minimal())
+
+
+library(tidyr)
+# Creamos una tabla resumen
+resumen_clusters <- datos_para_clúster %>%
+  mutate(cluster = res_pam_sint$clustering) %>%
+  group_by(cluster) %>%
+  summarise(across(everything(), ~ mean(as.numeric(as.character(.)) == 1) * 100))
+
+# Ver la tabla (en porcentaje %)
+print(resumen_clusters)
+resumen_long <- resumen_clusters %>%
+  pivot_longer(-cluster, names_to = "sintoma", values_to = "porcentaje")
+
+ggplot(resumen_long, aes(x = sintoma, y = porcentaje, fill = factor(cluster))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() + # Para leer bien los nombres de los síntomas
+  facet_wrap(~cluster) +
+  theme_minimal() +
+  labs(title = "Prevalencia de Síntomas por Clúster", y = "% de pacientes con el síntoma")
+
+
+# Tamaños de grupo definitivos
+table(resumen_long$cluster)
+```
+
+## 1.3.Grafico zoans coloreadas
+
+```{r}
+res_pam_sint <- pam(dist_gower_sint, k = 2)
+
+datos_numericos_grafico <- as.data.frame(lapply(datos_para_clúster, as.numeric))
+
+fviz_cluster(list(data = datos_numericos_grafico, cluster = res_pam_sint$clustering),
+             geom = "point",
+             ellipse.type = "convex",
+             palette = "Set2",
+             ggtheme = theme_minimal())
+```
+
+## 1.4.Guardar los reusltados y tamaño muetsral
+
+```{r}
+df_normal_sint <- datos_para_clúster %>%
+  mutate(cluster_normal = factor(res_pam_sint$clustering))
+
+# 3. Miramos el tamaño de los nuevos grupos
+table(df_normal_sint$cluster_normal)
+```
+
+## 1.5.Grafico descriptivos por colores
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+# Preparamos los datos
+tabla_normal_sint <- df_normal_sint %>%
+  group_by(cluster_normal) %>%
+  summarise(across(everything(), ~mean(. == levels(.)[2], na.rm = TRUE) * 100)) %>%
+  pivot_longer(-cluster_normal, names_to = "Sintoma", values_to = "Prevalencia")
+
+# Limpiamos nombres
+tabla_normal_sint$Sintoma <- gsub("_long_s13|_s13", "", tabla_normal_sint$Sintoma)
+summary(tabla_normal_sint)
+# Gráfico
+ggplot(tabla_normal_sint, aes(x = cluster_normal, y = reorder(Sintoma, Prevalencia), fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "red") + # Cambiamos a azul para diferenciarlo del MCA
+  geom_text(aes(label = paste0(round(Prevalencia, 1), "%")), size = 3) +
+  theme_minimal() +
+  labs(title = "Class description (validation)",
+       x = "Cluster",
+       y = "Symptom")
+```
+
+## 1.6.Grafico de SNPS
+
+```{r}
+# Unimos los datos de df_normal (que tiene el cluster_normal) con los SNPs
+df_genetica_normal_sint <- df_normal_sint %>%
+  mutate(iid = df_cases$iid) %>% # Recuperamos el ID para el join
+  inner_join(snps_clean, by = c("iid" = "IID"))
+
+# Verificamos que se hayan unido bien
+# table(df_genetica_normal$cluster_normal)
+```
+
+```{r}
+# Lista de nombres de todos los SNPs
+snps_cols <- colnames(snps_clean)[-1] 
+
+# Función para calcular P-valor adaptada al nuevo dataframe
+calc_p_normal <- function(snp_name) {
+  # Ajustar nombre por caracteres especiales
+  col_name <- grep(gsub("[:]", ".", snp_name), colnames(df_genetica_normal_sint), value = TRUE, fixed = TRUE)
+  if(length(col_name) == 0) return(NA)
+  
+  # Comparamos el Cluster 2 (el más sintomático) contra el resto
+  tab <- table(df_genetica_normal_sint$cluster_normal == 2, df_genetica_normal_sint[[col_name]] > 0)
+  
+  # Si la tabla tiene datos, hacemos el test
+  if(nrow(tab) == 2 & ncol(tab) == 2) {
+    return(fisher.test(tab)$p.value)
+  } else {
+    return(NA)
+  }
+}
+
+# Crear y mostrar la tabla de resultados
+resultados_p_normal_sint <- data.frame(
+  SNP = snps_cols,
+  p_valor = sapply(snps_cols, calc_p_normal)
+) %>%
+  arrange(p_valor)
+
+print(resultados_p_normal_sint)
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+# 1. Preparar los nombres de los SNPs
+nombres_snps <- colnames(snps_clean)[-1] 
+
+# 2. Crear el resumen genético basado en 'df_genetica_normal'
+resumen_genetico_normal_sint <- df_genetica_normal_sint %>%
+  group_by(cluster_normal) %>%
+  summarise(across(all_of(nombres_snps), 
+                   ~mean(. > 0, na.rm = TRUE) * 100)) %>% # % de portadores (heterocigotos + homocigotos)
+  pivot_longer(-cluster_normal, names_to = "SNP", values_to = "Prevalencia")
+
+# 3. Limpiar los nombres de los SNPs para que el eje Y se vea bien
+resumen_genetico_normal$SNP <- gsub(":.*", "", resumen_genetico_normal_sint$SNP)
+resumen_genetico_normal$SNP <- gsub("\\.", ":", resumen_genetico_normal_sint$SNP) # Volver a poner ':' si R los cambió
+
+# 4. Generar el Heatmap
+ggplot(resumen_genetico_normal, aes(x = cluster_normal, y = SNP, fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "green", name = "% Portadores") + # Rojo para combinar con tu gráfico de síntomas
+  geom_text(aes(label = paste0(round(Prevalencia, 1), "%")), size = 2.8) +
+  theme_minimal() +
+  labs(title = "Perfil Genético por Fenotipo de Síntomas (K=4)",
+       subtitle = "Basado en PAM / Gower (Sin MCA)",
+       x = "Cluster Normal (Síntomas Puros)", 
+       y = "Variante Genética (SNP)") +
+  theme(axis.text.y = element_text(size = 8))
+```
+
+# 2.CLUST SINT s13+ COMORBILIDADES + GRAVEDAD
+
+```{r}
+# Definición de variables por bloques
+gravedad_vars <- c("hospitalizacion", "uci", "asintomatico", "num_syms_s1_real", "num_syms_s13_real")
+comorb_vars <- c("Hipertension_arterial", "Hipercolesterolemia", "Diabetes", "Obesidad", 
+                 "Cardiopatia_isquemica", "Aritmia_cardiaca", "Enfermedad_cerebrovascular",
+                 "Otra_enfermedad_neurologica", "EPOC", "Otra_enfermedad_respiratoria_cronica",
+                 "Hepatopatia", "Tumor_solido", "Enfermedad_renal")
+sint_s13 <- c("fiebre_long_s13", "vomitos_long_s13", "astenia_long_s13", "disnea_long_s13", 
+              "dolor_torax_long_s13", "tos_long_s13", "dolor_articular_long_s13", 
+              "mialgia_long_s13", "cefalea_long_s13", "diarrea_long_s13", "afonia_long_s13", 
+              "anosmia_long_s13", "disgeusia_long_s13",  "Niebla_mental_s13", 
+              "insomnio_s13")
+names(df_cases)
+# Selección y limpieza de NAs
+vars_cluster <- df_cases %>%
+  dplyr::select(all_of(c(sint_s13, gravedad_vars, comorb_vars))) %>%
+  # PASO CLAVE: Convertir todos los NAs en 0
+  mutate(across(everything(), ~replace_na(., 0))) %>%
+  # Convertir a factor para que Gower trate 0 y 1 como categorías
+  mutate(across(everything(), as.factor))
+```
+
+## 2.1.Eleccion K
+
+```{r}
+library(cluster)
+library(factoextra)
+
+# 1. Aseguramos que la distancia esté calculada sobre los datos limpios (NAs=0)
+dist_gower_completo <- daisy(vars_cluster, metric = "gower")
+
+# 2. MÉTODO DE LA SILUETA 
+# Probamos de 2 a 10 clusters usando el algoritmo PAM
+fviz_nbclust(as.matrix(dist_gower_completo), pam, method = "silhouette", k.max = 10) +
+  labs(title = "Silhouette: Over 13 week symtoms + Comorbilities + acute phase") +
+  theme_minimal()
+
+# 3. MÉTODO DEL CODO (WSS) 
+fviz_nbclust(as.matrix(dist_gower_completo), pam, method = "wss", k.max = 10) +
+  labs(title = "Elbow: Over 13 week symtoms + Comorbilities + acute phase") +
+  theme_minimal()
+```
+
+## 2.2. Hacer clustering, tamaños muetsral y guardar
+
+```{r}
+library(cluster)
+
+# 1. Distancia de Gower con la matriz de datos completa (Sint + Comorb + Grav)
+dist_gower_completo <- daisy(vars_cluster, metric = "gower")
+
+# 2. PAM para K=4
+res_pam_completo <- pam(dist_gower_completo, k = 3)
+
+# 3. Incorporamos la etiqueta al dataframe para el análisis descriptivo
+df_final_completo <- df_cases %>%
+  mutate(cluster_clinico = factor(res_pam_completo$clustering))
+
+# Tamaños de grupo definitivos
+table(df_final_completo$cluster_clinico)
+```
+
+## 2.3.Grafico descriptivos por colores
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+# Seleccionamos variables representativas para el gráfico
+vars_plot <- c(sint_s13, "hospitalizacion", "uci", "Obesidad", "Hipertension_arterial", "Diabetes")
+
+resumen_mapa <- df_final_completo %>%
+  group_by(cluster_clinico) %>%
+  summarise(across(all_of(vars_plot), ~mean(. == 1, na.rm = TRUE) * 100)) %>%
+  pivot_longer(-cluster_clinico, names_to = "Variable", values_to = "Prevalencia")
+
+# Limpieza de etiquetas para que quede bonito
+resumen_mapa$Variable <- gsub("_long_s13|_s13", "", resumen_mapa$Variable)
+
+ggplot(resumen_mapa, aes(x = cluster_clinico, y = reorder(Variable, Prevalencia), fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "#f7fbff", high = "#08306b", name = "% Presencia") +
+  geom_text(aes(label = paste0(round(Prevalencia, 1), "%")), size = 3, 
+            color = ifelse(resumen_mapa$Prevalencia > 50, "white", "black")) +
+  theme_minimal() +
+  labs(title = "Fenotipos Clínicos Integrales de Long COVID (K=4)",
+       subtitle = "Prevalencia de Síntomas, Gravedad y Comorbilidades",
+       x = "Cluster", y = "Variable Clínica")
+```
+
+## 2.4.Grafico de SNPS
+
+```{r}
+# Cargar SNPs 
+df_snps <- read.table("R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/datos_indiv_para_SNPS_confusoras.raw", 
+                      header = TRUE)
+
+# Limpiar SNPs (quitar _HET y columnas técnicas)
+snps_clean <- df_snps %>%
+  dplyr::select(IID, !contains("_HET")) %>%
+  dplyr::select(-FID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# UNIR a tus casos. 
+
+df_completo <- df_cases %>%
+  mutate(cluster_clinico = factor(res_pam_completol$clustering)) %>%
+  inner_join(snps_clean, by = c("iid" = "IID"))
+
+
+
+# Definimos qué SNPs queremos pintar 
+nombres_snps <- colnames(snps_clean)[-1] 
+
+# Creamos el resumen para el gráfico
+resumen_genetico <- df_completo %>%
+  group_by(cluster_clinico) %>%
+  summarise(across(all_of(nombres_snps), 
+                   ~mean(. > 0, na.rm = TRUE) * 100)) %>% # % de gente con al menos 1 alelo de riesgo
+  pivot_longer(-cluster_clinico, names_to = "SNP", values_to = "Prevalencia")
+
+# Limpiamos los nombres de los SNPs para que no sean tan largos
+resumen_genetico$SNP <- gsub(":.*", "", resumen_genetico$SNP)
+
+# Graficamos
+ggplot(resumen_genetico, aes(x = cluster_clinico, y = SNP, fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "#238b45", name = "% Portadores") +
+  geom_text(aes(label = paste0(round(Prevalencia, 1), "%")), size = 2.5) +
+  theme_minimal() +
+  labs(title = "Distribución de SNPs por Cluster Clínico",
+       subtitle = "Basado en el modelo de 3 grupos (PAM/Gower)",
+       x = "Cluster", y = "Variante Genética (SNP)")
+```
+
+```{r}
+# Lista de nombres de todos los SNPs en tu dataframe
+snps_cols <- colnames(snps_clean)[-1] 
+
+# Función para calcular P-valor rápido
+calc_p <- function(snp_name) {
+  # Ajustar nombre por si R cambió caracteres especiales
+  col_name <- grep(gsub("[:]", ".", snp_name), colnames(df_completo), value = TRUE, fixed = TRUE)
+  if(length(col_name) == 0) return(NA)
+  
+  tab <- table(df_completo$cluster_clinico == 2, df_completo[[col_name]] > 0)
+  return(fisher.test(tab)$p.value)
+}
+
+# Crear tabla de resultados
+resultados_p <- data.frame(
+  SNP = snps_cols,
+  p_valor = sapply(snps_cols, calc_p)
+) %>%
+  arrange(p_valor) # Los más significativos arriba
+
+print(resultados_p)
+```
+
+## Comparativa
+
+```{r}
+
+sil_integral <- mean(silhouette(res_pam_completo$clustering, dist_gower_completo)[,3])
+
+# Silueta del Modelo Normal (el de síntomas puros)
+sil_normal <- mean(silhouette(res_pam_sint$clustering, dist_gower_sint)[,3])
+
+print(paste("Silueta Modelo Integral:", round(sil_integral, 3)))
+print(paste("Silueta Modelo Síntomas Puros:", round(sil_normal, 3)))
+```
+
+# 3. LCA VALIDACION
+
+## 3.1. Hacer LCAcogiendo de validacion y cambiando nombres
+
+```{r}
+#########################################################################
+# ANÁLISIS DE VALIDACIÓN - CON NOMBRES DE DISCOVERY (S13)
+#########################################################################
+names(df)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(poLCA)
+library(ggplot2)
+
+# 1. CARGA DE DATOS
+path_clinica <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA - ORIGINAL.txt"
+df_clinica <- read_tsv(path_clinica)
+names(df_clinica)
+# 2. SELECCIÓN Y RENOMBRADO A NOMBRES "DISCOVERY"
+df_equivalente <- df_clinica %>%
+  filter(long_covid == 1) %>%
+  dplyr::select(
+    fiebre_long_s13   = `Fever or low-grade fever`,
+    astenia_long_s13  = `Tiredness, unusual fatigue`,
+    cefalea_long_s13  = Headache,
+    mialgia_long_s13  = `Muscular problems`,
+    dolor_articular_long_s13 = joint_problems,
+    
+    # Agrupados Respiratorios
+    disnea_long_s13   = `Respiratory problems`,
+    tos_long_s13      = `Respiratory problems`,
+    afonia_long_s13    = `Respiratory problems`,
+    
+    # Agrupados Sensoriales
+    anosmia_long_s13  = `Loss of taste or smell`,
+    disgeusia_long_s13 = `Loss of taste or smell`,
+    
+    # Agrupados Digestivos
+    diarrea_long_s13  = `Digestive problems`,
+    vomitos_long_s13  = `Digestive problems`,
+    
+    # Agrupados Neurológicos
+    niebla_mental_s13 = `Cognitive and neurological problems`,
+    insomnio_s13      = `Cognitive and neurological problems`,
+    
+    # Otros (Dolor de pecho)
+    dolor_torax_long_s13 = `Cardiovascular problems`
+  ) %>%
+  # Tratamos NAs como 0 y pasamos a 1-2 para poLCA
+  mutate(across(everything(), ~ replace_na(as.numeric(.), 0) + 1)) 
+
+# 3. DEFINICIÓN DEL MODELO
+sintomas_val <- colnames(df_equivalente)
+f_val <- as.formula(paste("cbind(", paste(sintomas_val, collapse = ","), ") ~ 1"))
+names(df_clinica)
+```
+
+## 3.2. Metricas y comparacion
+
+```{r}
+# 4. EJECUCIÓN DE MODELOS (Semilla fija para replicabilidad)
+set.seed(123) 
+lca2_v <- poLCA(f_val, df_equivalente, nclass=2, nrep=10, verbose=FALSE)
+lca3_v <- poLCA(f_val, df_equivalente, nclass=3, nrep=10, verbose=FALSE)
+lca4_v <- poLCA(f_val, df_equivalente, nclass=4, nrep=10, verbose=FALSE)
+lca5_v <- poLCA(f_val, df_equivalente, nclass=5, nrep=10, verbose=FALSE)
+# Imprimir BICs
+cat("\n--- RESULTADOS BIC VALIDACIÓN ---\n")
+cat("BIC 2 clases:", lca2_v$bic, "\n")
+cat("BIC 3 clases:", lca3_v$bic, "\n")
+cat("BIC 4 clases:", lca4_v$bic, "\n")
+cat("BIC 5 clases:", lca5_v$bic, "\n")
+# 5. SELECCIÓN DEL MODELO (Ajusta según el BIC que te salga más bajo)
+mejor_lca_v <- lca4_v
+
+
+print(paste("Log-likelihood 2 grupos:", lca2_v$llik))
+print(paste("Log-likelihood 3 grupos:", lca3_v$llik))
+print(paste("Log-likelihood 4 grupos:", lca4_v$llik))
+print(paste("Log-likelihood 5 grupos:", lca5_v$llik))
+```
+
+###LRCH1
+
+```{r}
+# ==============================================================================
+# SCRIPT DE INTEGRACIÓN UNIFICADO Y CORREGIDO: CLÍNICA + GENÉTICA (LRCH1)
+# ==============================================================================
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(readr)
+
+# PASO 1: CARGAR BASE DE DATOS CLÍNICA ORIGINAL
+path_clinica <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Validacion/bbdd_validacion_unificado_SARA - ORIGINAL.txt"
+df_clinica <- read_tsv(path_clinica)
+df_clinica <- df_clinica %>% filter(long_covid == 1)
+
+# PASO 2: INYECTAR LAS CLASES LCA EN EL DF CLÍNICO 
+df_clinica$Clase_LCA <- factor(lca4_v$predclass)
+
+# PASO 3: CARGAR LOS GENOTIPOS DE PLINK (LRCH1)
+ruta_genotipos <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/genotipos_LRCH1.raw" 
+df_geno <- fread(ruta_genotipos)
+
+# PASO 4: FUSIONAR CLÍNICA Y GENÉTICA POR EL ID DEL PACIENTE ("IID")
+df_analisis <- merge(df_clinica, df_geno, by = "IID")
+print(paste("Pacientes acoplados con éxito para el análisis:", nrow(df_analisis)))
+
+# PASO 5: DETECTAR SNPs Y CALCULAR EL GENETIC SCORE AUTOMÁTICO
+# Buscamos las columnas que contienen los SNPs de LRCH1 (Cromosoma 13)
+columnas_snps <- grep("chr13:", names(df_analisis), value = TRUE)
+print(paste("Se han detectado", length(columnas_snps), "SNPs dentro del gen LRCH1."))
+
+# Calculamos el Score Genético sumando los alelos de riesgo por paciente
+df_analisis$Score_LRCH1 <- rowSums(df_analisis[, columnas_snps, drop = FALSE], na.rm = TRUE)
+
+# ==============================================================================
+# PASO 6: REGRESIÓN ESTADÍSTICA MULTIVARIANTE
+# ==============================================================================
+# Ajustamos por tus covariables exactas: Clase_LCA, edad_final y sexo.
+# Al ser Clase_LCA un factor, R tomará automáticamente la Clase 1 como referencia.
+
+modelo_final <- lm(Score_LRCH1 ~ Clase_LCA + edad_final + sexo, data = df_analisis)
+summary(modelo_final)
+
+# ==============================================================================
+# PASO 7: GRÁFICO EN ALTA RESOLUCIÓN PARA TU TESIS / PPT
+# ==============================================================================
+colores_clusters <- c("#2b8cbe", "#fec44f", "#de2d26", "#bec44f") 
+
+grafico_final <- ggplot(df_analisis, aes(x = Clase_LCA, y = Score_LRCH1, fill = Clase_LCA)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA, width = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.4, color = "black", size = 1.8) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Carga Genética Acumulada en LRCH1 por Clúster Clínico",
+    subtitle = paste("Análisis conjunto de", length(columnas_snps), "SNPs (Score Aditivo)"),
+    x = "Clúster Clínico (Subfenotipos Semanas 13)",
+    y = "Genetic Score (Suma de Alelos de Riesgo)"
+  ) +
+  scale_fill_manual(values = colores_clusters) +
+  theme(
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(), # Limpia el fondo para que se vea más ejecutivo
+    plot.title = element_text(face = "bold", size = 16),
+    axis.text = element_text(color = "black")
+  )
+table(df_clinica$Clase_LCA)
+# Pintar el gráfico final en RStudio
+print(grafico_final)
+```
+
+
+
+## 3.3. Grafico descriptivo
+
+```{r}
+# 6. GRÁFICO DE PREDOMINANCIA CON NOMBRES DISCOVERY
+perfil_val <- sapply(mejor_lca_v$probs, function(x) x[, 2] * 100) %>%
+  as.data.frame() %>%
+  mutate(Clase = factor(1:nrow(.))) %>%
+  pivot_longer(-Clase, names_to = "Sintoma", values_to = "Prevalencia")
+
+ggplot(perfil_val, aes(x = Clase, y = reorder(Sintoma, Prevalencia), fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "#E64B35") + # Color coral/rojo discovery
+  geom_text(aes(label = paste0(round(Prevalencia, 1), "%")), 
+            size = 3.5, fontface = "bold",
+            color = ifelse(perfil_val$Prevalencia > 50, "white", "black")) +
+  theme_minimal() +
+  labs(title = "Validación: Perfil de Síntomas (Nombres Discovery)",
+       subtitle = paste("Modelo LCA | N =", nrow(df_equivalente)),
+       x = "Clase Latente", 
+       y = "Síntoma (Equivalencia s13)",
+       fill = "% Probabilidad") +
+  theme(axis.text.y = element_text(size = 10))
+
+# 7. GUARDAR RESULTADO
+
+df_casos_val_final <- df_equivalente %>%
+  mutate(Clase_LCA_Validacion = mejor_lca_v$predclass)
+table(df_casos_val_final$cluster_normal)
+table(mejor_lca_v$predclass)
+```
+
+## 3.4.Grafico de SNPS
+
+### Sacas los genotipos de los SNPS que te interes
+
+```{r}
+#########################################################################
+# ANÁLISIS GENÉTICO (SNPs) - COHORTE DE VALIDACIÓN
+#########################################################################
+
+# 1. Definir rutas (Asegúrate de que path_lista_snps apunte a tu archivo txt con los 17 rsIDs)
+plink_path <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+path_genetica_base <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/DiscoveryMasValidacion/DiscoveryMasValidacion_maf_01"
+
+# Leemos el archivo resultante (que ahora es minúsculo y no petará)
+df_geno <- read.table("genotipos_extraidos.raw", header = TRUE, check.names = FALSE)
+```
+
+
+
+```{r}
+# 2. LIMPIEZA DE SNPS
+# Quitamos columnas técnicas y posibles duplicados (_HET)
+snps_clean_val <- df_geno %>%
+  dplyr::select(IID, !contains("_HET")) %>%
+  dplyr::select(-FID, -PAT, -MAT, -SEX, -PHENOTYPE)
+
+# 3. UNIR CON TU CLASIFICACIÓN LCA DE VALIDACIÓN
+df_completo_val <- df_clinica_final %>%
+  inner_join(snps_clean_val, by = c("IID" = "IID")) # Ajusta "IID" si en tu tabla es "iid" o "ID"
+
+# 4. PREPARAR RESUMEN PARA EL GRÁFICO
+nombres_snps_val <- colnames(snps_clean_val)[-1] 
+
+resumen_genetico_val <- df_completo_val %>%
+  group_by(Clase_LCA_Validacion) %>%
+  summarise(across(all_of(nombres_snps_val), 
+                   ~mean(. > 0, na.rm = TRUE) * 100)) %>% # % de portadores de al menos 1 alelo
+  pivot_longer(-Clase_LCA_Validacion, names_to = "SNP", values_to = "Prevalencia")
+
+# Limpiar nombres de SNPs para el eje Y (quitar sufijos de alelos)
+resumen_genetico_val$SNP <- gsub(":.*|_.*", "", resumen_genetico_val$SNP)
+
+# 5. GRAFICAR HEATMAP GENÉTICO
+ggplot(resumen_genetico_val, aes(x = factor(Clase_LCA_Validacion), y = SNP, fill = Prevalencia)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "#238b45", name = "% Portadores") +
+  geom_text(aes(label = paste0(round(Prevalencia, 1), "%")), size = 3) +
+  theme_minimal() +
+  labs(title = "Distribución Genética: Cohorte de Validación",
+       subtitle = "Frecuencia de alelos de riesgo por Fenotipo LCA",
+       x = "Fenotipo (Clase LCA)", y = "Variante Genética (SNP)")
+
+#########################################################################
+# 6. CÁLCULO DE P-VALORES (TEST DE ASOCIACIÓN POR CLASE)
+#########################################################################
+
+# Función para calcular P-valor comparando una clase contra el resto
+clase_interes <- 3 
+
+resultados_p_val <- data.frame(SNP = nombres_snps_val) %>%
+  rowwise() %>%
+  mutate(p_valor = {
+    # Tabla de contingencia: Pertenece a la clase (SÍ/NO) vs Tiene el alelo (SÍ/NO)
+    tab <- table(df_completo_val$Clase_LCA_Validacion == clase_interes, 
+                 df_completo_val[[SNP]] > 0)
+    
+    # Si la tabla no es 2x2 (porque nadie tiene el SNP), devolvemos NA
+    if(all(dim(tab) == c(2,2))) fisher.test(tab)$p.value else NA
+  }) %>%
+  arrange(p_valor)
+
+# Mostrar los SNPs más significativos para esa clase
+print("SNPs más asociados a la clase de interés:")
+print(head(resultados_p_val, 10))
+```
+
+
+## 3.4.GRAFICO SNPS (3)
+```{r}
+#########################################################################
+# AÑADIDO: CONEXIÓN GENÉTICA - VALIDACIÓN DE LOS 3 SNPs
+#########################################################################
+library(data.table)
+
+# 1. RECUPERAR LOS IDs CLÍNICOS QUE SE HABÍAN PERDIDO
+df_clinica_con_id <- df_clinica %>%
+  filter(long_covid == 1) %>%
+  mutate(Clase_LCA_Validacion = mejor_lca_v$predclass) %>%
+  dplyr::select(IID, Clase_LCA_Validacion) # Asegúrate de que en tu archivo original se llama 'IID' (si es minúscula cambia a iid)
+
+# Limpieza rápida de espacios en blanco en el ID clínico
+df_clinica_con_id$IID <- trimws(as.character(df_clinica_con_id$IID))
+
+
+# 2. CARGAR LA GENÉTICA DE LOS 3 SNPs (Archivo generado previamente por PLINK)
+path_genetica_val <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/MEGANALISIS/genotipo_3_snps_genes.raw"
+
+if(!file.exists(path_genetica_val)){
+  stop("¡Atención! No se encuentra el archivo .raw de los 3 SNPs. Asegúrate de haber ejecutado el comando de PLINK primero.")
+}
+
+df_geno_val <- as.data.frame(fread(path_genetica_val))
+df_geno_val$IID <- trimws(as.character(df_geno_val$IID))
+
+# Limpiamos columnas técnicas del archivo genético para quedarnos solo con IID y los SNPs
+snps_clean_val <- df_geno_val %>%
+  dplyr::select(IID, !contains("_HET")) %>%
+  dplyr::select(-any_of(c("FID", "PAT", "MAT", "SEX", "PHENOTYPE")))
+
+
+# 3. UNIR CLÍNICA Y GENÉTICA
+df_completo_val <- df_clinica_con_id %>%
+  inner_join(snps_clean_val, by = "IID")
+
+# Extraemos los nombres reales de las columnas de los SNPs
+nombres_snps_val <- setdiff(colnames(snps_clean_val), "IID")
+
+
+# 4. CALCULAR TAMAÑO MUESTRAL (N) REAL DE CADA CLÚSTER CRUZADO
+tabla_conteos_val <- df_completo_val %>%
+  group_by(Clase_LCA_Validacion) %>%
+  summarise(N_Grupo = n(), .groups = "drop")
+
+print("--- COMPROBACIÓN DE PACIENTES POR CLÚSTER CON GENÉTICA (VALIDACIÓN) ---")
+print(tabla_conteos_val)
+print("----------------------------------------------------------------------")
+
+
+# 5. PREPARAR LOS DATOS PARA EL HEATMAP
+resumen_genetico_val <- df_completo_val %>%
+  group_by(Clase_LCA_Validacion) %>%
+  summarise(across(all_of(nombres_snps_val), 
+                   ~mean(. > 0, na.rm = TRUE) * 100), .groups = "drop") %>% 
+  pivot_longer(-Clase_LCA_Validacion, names_to = "SNP_Raw", values_to = "Prevalencia") %>%
+  left_join(tabla_conteos_val, by = "Clase_LCA_Validacion")
+
+
+# 6. LIMPIEZA DE ETIQUETAS (Cambiar puntos por dos puntos e inyectar la N)
+resumen_genetico_val <- resumen_genetico_val %>%
+  mutate(
+    # Quitamos el alelo contado al final (_G, _T...) y devolvemos los dos puntos (:) estéticos
+    SNP_Clean = sub("_[^_]+$", "", SNP_Raw),
+    SNP_Clean = gsub("\\.", ":", SNP_Clean),
+    
+    # Asignamos los mismos nombres que en Discovery para ver si replican bien
+    Clase_Base = case_when(
+      Clase_LCA_Validacion == 1 ~ "1: LEVE",
+      Clase_LCA_Validacion == 2 ~ "2: SENSO",
+      Clase_LCA_Validacion == 3 ~ "3: ASTE-MENT",
+      Clase_LCA_Validacion == 4 ~ "4: DOL-RESP",
+      TRUE ~ paste("Clase", Clase_LCA_Validacion)
+    ),
+    
+    # Generamos la etiqueta con salto de línea dinámico
+    Clase_Label_Con_N = paste0(Clase_Base, "\n(N = ", N_Grupo, ")")
+  )
+
+
+ggplot(resumen_genetico_val, aes(x = Clase_Label_Con_N, y = SNP_Clean, fill = Prevalencia)) +
+  geom_tile(color = "white", lwd = 0.5) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#1e6b33", name = "% Portadores") +
+  geom_text(aes(label = sprintf("%.1f%%", Prevalencia)), size = 3.5, fontface = "bold") +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Distribución Genética: Cohorte de Validación",
+    subtitle = "Frecuencia de alelos de riesgo por Fenotipo LCA",
+    x = "Fenotipos Clínicos de Long Covid (LCA)", 
+    y = "Variante Genética (SNP)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5, face = "bold", color = "black"),
+    axis.text.y = element_text(family = "mono", face = "bold", size = 10),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey40")
+  )
+
+
+# 8. CÁLCULO DE P-VALORES (TEST DE FISHER POR CLASE)
+clase_interes <- 3 
+
+resultados_p_val <- data.frame(SNP_Raw = nombres_snps_val) %>%
+  rowwise() %>%
+  mutate(p_valor = {
+    tab <- table(df_completo_val$Clase_LCA_Validacion == clase_interes, 
+                 df_completo_val[[SNP_Raw]] > 0)
+    
+    if(all(dim(tab) == c(2,2))) fisher.test(tab)$p.value else NA
+  }) %>%
+  ungroup() %>%
+  mutate(SNP_Clean = sub("_[^_]+$", "", SNP_Raw),
+         SNP_Clean = gsub("\\.", ":", SNP_Clean)) %>%
+  dplyr::select(SNP = SNP_Clean, p_valor) %>%
+  arrange(p_valor)
+
+cat("\n")
+print(paste("--- ASOCIACIÓN DE SNPs CON LA CLASE DE INTERÉS (Clase", clase_interes, ") EN VALIDACIÓN ---"))
+print(resultados_p_val)
+```
+
+
+
+## 3.5.Grafico del video lineas
+
+```{r}
+#########################################################################
+# GRÁFICO DE PERFILES - MODELO DE VALIDACIÓN (lca4_v)
+#########################################################################
+
+# 1. Extraer las probabilidades del modelo de validación
+# Seleccionamos la columna 2 (probabilidad de presencia del síntoma)
+probs_val <- sapply(lca4_v$probs, function(x) x[, 2]) 
+
+# 2. Convertir a formato largo para ggplot
+df_plot_val <- as.data.frame(probs_val) %>%
+  mutate(Clase = factor(1:nrow(.))) %>%
+  pivot_longer(-Clase, names_to = "Sintoma", values_to = "Probabilidad")
+
+# 3. Limpiar nombres de los síntomas (quitar sufijos para que se vea profesional)
+df_plot_val$Sintoma <- gsub("_long_s13|_s13", "", df_plot_val$Sintoma)
+df_plot_val$Sintoma <- gsub("_", " ", df_plot_val$Sintoma)
+
+# 4. Calcular los porcentajes de cada clase en la Validación
+proporciones_v <- round(lca4_v$P * 100, 1)
+etiquetas_v <- paste0("Clase ", 1:4, " (", proporciones_v, "%)")
+names(etiquetas_v) <- 1:4
+
+# 5. Generar el gráfico
+ggplot(df_plot_val, aes(x = Sintoma, y = Probabilidad, group = Clase, color = Clase)) +
+  geom_line(size = 1.1) +
+  geom_point(size = 2.5) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+  scale_color_discrete(labels = etiquetas_v) +
+  theme_minimal() +
+  labs(title = "Subphenotypes in Validation Cohort",
+       x = "Symptoms",
+       y = "Probability",
+       color = "Subphenotypes") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+        legend.position = "bottom",
+        panel.grid.minor = element_blank())
+```
+
+
+#4.cOMPARACION lca VS Clustering
+```{r}
+
+library(cluster)
+library(poLCA)
+
+# --- COMPARACIÓN DE CALIDAD DE CLASIFICACIÓN ---
+
+# 1. Silhouette para el Clustering original (PAM)
+sil_pam <- cluster::silhouette(res_pam_sint$clustering, dist_gower_sint)
+avg_sil_pam <- mean(sil_pam[, 3])
+
+# 2. Silhouette para el LCA (usando la misma métrica de distancia para comparar)
+# Extraemos las clases predichas del objeto lca4
+lca_clusters <- lca4$predclass
+sil_lca <- cluster::silhouette(lca_clusters, dist_gower_sint)
+avg_sil_lca <- mean(sil_lca[, 3])
+
+# 3 Entropía relativa
+# Mide qué tan "seguro" está el modelo de que un paciente es de una clase y no de otra
+entropy_lca <- function(p) {
+  n <- nrow(p)
+  k <- ncol(p)
+  # Evitamos log(0) sumando un valor ínfimo (1e-10)
+  e <- 1 + (sum(p * log(p + 1e-10)) / (n * log(k)))
+  return(e)
+}
+certeza_lca <- entropy_lca(lca4$posterior)
+
+# --- RESULTADOS ---
+cat("\n--- Comparación Metodológica ---\n")
+print(paste("Promedio Silueta PAM:", round(avg_sil_pam, 3)))
+print(paste("Promedio Silueta LCA:", round(avg_sil_lca, 3)))
+print(paste("Entropía (Certeza) LCA:", round(certeza_lca, 3)))
+
+# 4. Tabla de concordancia mejorada
+# Para ver cuántos pacientes "coinciden" entre ambos métodos
+table(PAM = res_pam_sint$clustering, LCA = lca4$predclass)
+```
+
+
+#5.Creacion de discovery con casos
+
+```{r}
+# 1. Asignamos primero la clase general 
+df_cases$clase_lca <- lca4$predclass
+
+# 2. Creamos las 4 columnas específicas para GWAS (Codificación 1=Control, 2=Caso)
+df_cases <- df_cases %>%
+  mutate(
+    clust1_senso       = ifelse(clase_lca == 1, 2, 1),
+    clus2_astenia      = ifelse(clase_lca == 2, 2, 1),
+    clus3_recupe       = ifelse(clase_lca == 3, 2, 1),
+    clus4_musculoresp  = ifelse(clase_lca == 4, 2, 1)
+  )
+
+# 3. Definimos la ruta y el nombre del archivo
+ruta_salida <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenotipos_lca_gwas.txt"
+
+
+write.table(df_cases, 
+            file = ruta_salida, 
+            sep = "\t", 
+            quote = FALSE, 
+            row.names = FALSE, 
+            col.names = TRUE)
+
+print(paste("Archivo guardado con éxito en:", ruta_salida))
+table(df_cases$clust1_senso)
+```
+
+#Creacion de discovery con CONTROLES y cluster 1
+
+```{r}
+# 1. Definir quiénes son los casos del Clúster 1
+# Asumiendo que df_cases son tus 512 pacientes con Long COVID
+df_cases$clase_lca <- lca4$predclass
+ids_cluster1 <- df_cases %>% 
+  filter(clase_lca == 1) %>% 
+  pull(IID) 
+
+# 2. Crear la nueva base de datos para el GWAS
+
+bbdd_gwas_c1_vs_controles <- df_discovery %>%
+  mutate(pheno_c1_vs_ctrl = case_when(
+    IID %in% ids_cluster1 ~ 2,        # Caso: Es del Clúster 1
+    covid_persistente == 0 ~ 1,      # Control: No tiene Long COVID (ajusta el nombre de la col si varía)
+    TRUE ~ NA_real_                  # El resto (otros clústeres) se ponen como NA para que PLINK los ignore
+  )) %>%
+  # Nos quedamos solo con los que no son NA (Casos C1 y Controles puros)
+  filter(!is.na(pheno_c1_vs_ctrl))
+
+# 3. Guardar el nuevo archivo de fenotipos
+ruta_fenos_c1 <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenos_C1_vs_CONTROLES.txt"
+
+# Seleccionamos FID, IID y el nuevo fenotipo
+write.table(bbdd_gwas_c1_vs_controles, 
+            file = ruta_fenos_c1, 
+            sep = "\t", 
+            quote = FALSE, 
+            row.names = FALSE)
+
+# 4. Lanzar el GWAS en PLINK (ajustando el output)
+output_c1_ctrl <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/GWAS_C1_vs_CONTROLES"
+
+comando_plink_c1 <- paste(
+  shQuote(plink_exe),
+  "--bfile", shQuote(bfile_path),
+  "--pheno", shQuote(ruta_fenos_c1),
+  "--pheno-name pheno_c1_vs_ctrl",
+  "--covar", shQuote(covar_file),
+  "--covar-name sexo,edad_final,edad_sq,BATCH.y,sexo_edad",
+  "--logistic hide-covar",
+  "--ci 0.95",
+  "--allow-no-sex",
+  "--missing-var-code NA",
+  "--out", shQuote(output_c1_ctrl)
+)
+
+system(comando_plink_c1)
+```
+
+# 6.GWAS DISCOVERY
+
+## 6.1. Clus1
+
+### CASOS
+
+```{r}
+# 1. Definir la ruta del ejecutable de PLINK
+plink_exe <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+
+# 2. Definir rutas de archivos (Uso barras / para evitar problemas en R)
+bfile_path  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/Full/qc_geno_0.05"
+pheno_file  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenotipos_lca_gwas.txt"
+covar_file  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenotipos_lca_gwas.txt"
+output_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/GWAS_disc_CLUS1sensorial_VS_CASOS"
+
+datos<-read.table(covar_file)
+table(datos$clust1_senso)
+
+# 3. Construir el comando de PLINK
+# Nota: --1 indica que 0/1 se trate como control/caso, pero como hemos usado 1/2, PLINK lo reconoce por defecto.
+# Usamos --pheno-name clust1_senso para decirle exactamente qué columna del archivo nuevo atacar.
+comando_plink <- paste(
+  shQuote(plink_exe),
+  "--bfile", shQuote(bfile_path),
+  "--pheno", shQuote(pheno_file),
+  "--pheno-name clust1_senso",   # <--- PLINK DEBE BUSCAR ESTO
+  "--covar", shQuote(covar_file),
+  "--covar-name sexo,edad_final,edad_sq,BATCH.y,sexo_edad",
+  "--logistic hide-covar",
+  "--ci 0.95",
+  "--allow-no-sex",
+  "--missing-var-code NA",
+  "--out", shQuote(output_path)
+)
+system(comando_plink)
+```
+
+```{r}
+library(data.table)
+
+# Leemos el archivo de resultados
+ruta_logistic <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/GWAS_disc_CLUS1sensorial_VS_CASOS.assoc.logistic"
+
+
+# Usamos col_types para evitar avisos y asegurar que lea bien
+gwas_raw <- read_table(ruta_logistic)
+
+# 2. Filtrar y formatear
+top_snps <- gwas_raw %>%
+  # MUY IMPORTANTE: PLINK guarda las covariables aquí. 
+  # Filtramos para quedarnos solo con el efecto del SNP (ADD)
+  filter(TEST == "ADD") %>% 
+  filter(!is.na(P)) %>%
+  mutate(
+    IC_95 = paste0("(", round(L95, 3), "-", round(U95, 3), ")"),
+    OR = round(OR, 3)
+  ) %>%
+  dplyr::select(CHR, SNP, BP, A1, OR, IC_95, STAT, P) %>%
+  arrange(P)
+
+# 3. Ver resultados sugerentes (P < 1e-5)
+p_sug <- 1e-5
+resumen_top <- top_snps %>% filter(P < p_sug)
+
+print(paste("Se han encontrado", nrow(resumen_top), "SNPs con P < 1e-5"))
+print(head(resumen_top, 20))
+
+resumen_top
+```
+
+Top SNPs
+
+```{r}
+library(dplyr)
+library(readr)
+
+# 1. Leer los datos (ajustado a tu estructura detectada)
+ruta_resultados <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/GWAS_disc_CLUS1sensorial_VS_CASOS/GWAS_disc_CLUS1sensorial_VS_CASOS.assoc.logistic"
+
+# Usamos col_types para evitar avisos y asegurar que lea bien
+gwas_raw <- read_table(ruta_resultados)
+
+# 2. Filtrar y formatear
+top_snps <- gwas_raw %>%
+  # MUY IMPORTANTE: PLINK guarda las covariables aquí. 
+  # Filtramos para quedarnos solo con el efecto del SNP (ADD)
+  filter(TEST == "ADD") %>% 
+  filter(!is.na(P)) %>%
+  mutate(
+    IC_95 = paste0("(", round(L95, 3), "-", round(U95, 3), ")"),
+    OR = round(OR, 3)
+  ) %>%
+  dplyr::select(CHR, SNP, BP, A1, OR, IC_95, STAT, P) %>%
+  arrange(P)
+
+# 3. Ver resultados sugerentes (P < 1e-5)
+p_sug <- 1e-5
+resumen_top <- top_snps %>% filter(P < p_sug)
+
+print(paste("Se han encontrado", nrow(resumen_top), "SNPs con P < 1e-5"))
+print(head(resumen_top, 20))
+resumen_top
+
+```
+
+### CONTROLES
+
+```{r}
+# 1. Definir la ruta del ejecutable de PLINK
+plink_exe <- "C:/Users/ssanchezo/Downloads/plink_win64_20250819/plink.exe"
+
+# 2. Definir rutas de archivos (Uso barras / para evitar problemas en R)
+bfile_path  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/Genotipo x chromosomas/Full/qc_geno_0.05"
+pheno_file  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenos_C1_vs_CONTROLES.txt"
+covar_file  <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/fenos_C1_vs_CONTROLES.txt"
+output_path <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/GWAS_disc_CLUS1sensorial_VS_CONTROLES"
+
+# 3. Construir el comando de PLINK
+# Nota: --1 indica que 0/1 se trate como control/caso, pero como hemos usado 1/2, PLINK lo reconoce por defecto.
+# Usamos --pheno-name clust1_senso para decirle exactamente qué columna del archivo nuevo atacar.
+comando_plink <- paste(
+  shQuote(plink_exe),
+  "--bfile", shQuote(bfile_path),
+  "--pheno", shQuote(pheno_file),
+  "--pheno-name pheno_c1_vs_ctrl",
+  "--covar", shQuote(covar_file),
+  "--covar-name sexo,edad_final,edad_sq,BATCH.y,sexo_edad",
+  "--logistic hide-covar",
+  "--ci 0.95",
+  "--allow-no-sex",
+  "--missing-var-code NA",
+  "--out", shQuote(output_path)
+)
+
+# 4. Ejecutar PLINK
+system(comando_plink)
+```
+
+Top SNps
+
+```{r,warning=FALSE}
+ruta_resultados2 <- "R:/Human_Genotyping-CEGEN/Backup/Personales/Sara/LongCovid/EUROPEOS/CLUSTERING/GWAS_disc_CLUS1sensorial_VS_CONTROLES.assoc.logistic"
+
+# Usamos col_types para evitar avisos y asegurar que lea bien
+gwas_raw2 <- read_table(ruta_resultados2)
+
+# 2. Filtrar y formatear
+top_snps2 <- gwas_raw2 %>%
+  # MUY IMPORTANTE: PLINK guarda las covariables aquí. 
+  # Filtramos para quedarnos solo con el efecto del SNP (ADD)
+  filter(TEST == "ADD") %>% 
+  filter(!is.na(P)) %>%
+  mutate(
+    IC_95 = paste0("(", round(L95, 3), "-", round(U95, 3), ")"),
+    OR = round(OR, 3)
+  ) %>%
+  dplyr::select(CHR, SNP, BP, A1, OR, IC_95, STAT, P) %>%
+  arrange(P)
+
+# 3. Ver resultados sugerentes (P < 1e-5)
+p_sug <- 1e-5
+resumen_top2 <- top_snps2 %>% filter(P < p_sug)
+
+print(paste("Se han encontrado", nrow(resumen_top2), "SNPs con P < 1e-5"))
+print(head(resumen_top, 20))
+
+resumen_top
+```
+
+
+## 6.2. Cluster 1 VS CLuster 3
+
+Generar bbdd solo con cluster 1 como controles y cluster 4 como casos
+```{r}
+# 1. Asignar clases predichas
+df_cases$Cluster_Asignado <- lca4$predclass
+
+table(df_cases$Cluster_Asignado)
+
+library(dplyr)
+
+# 2. Filtrar solo las clases de interés y crear la variable binaria
+datos_gwas <- df_cases %>%
+  dplyr::filter(Cluster_Asignado %in% c(1, 4)) %>%
+  dplyr::mutate(extremo = dplyr::if_else(Cluster_Asignado == 4, 1, 0))
+
+# 3. CREAR Y ORDENAR LAS COLUMNAS FID E IID EN LAS DOS PRIMERAS POSICIONES
+df_gwas_final <- datos_gwas %>%
+  # Si solo tienes la columna IID, creamos FID duplicando su valor
+  dplyr::mutate(FID = IID) %>% 
+  # Forzamos que las dos primeras columnas sean FID e IID estrictamente
+  dplyr::select(FID, IID, extremo, everything())
+
+# 4. Comprobaciones de seguridad
+names(df_gwas_final) # Verás que las primeras tres son: "FID" "IID" "extremo"
+table(df_gwas_final$extremo)
+
+# 5. Definir la ruta de salida
+ruta_salida <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\fenos_C1_vs_C4.txt"
+
+# 6. Guardar el archivo listo para PLINK
+write.table(df_gwas_final, 
+            file = ruta_salida, 
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            sep = "\t")
+
+print("¡Archivo 'fenos_C1_vs_C4.txt' generado con éxito con el formato FID e IID requerido!")
+```
+
+
+
+### Discovery 
+
+```{r}
+library(dplyr)
+library(readr)
+
+# 1. Definir la ruta del archivo de resultados generado por PLINK
+ruta_resultados <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\GWAS_disc_CLUS1_VS_C4.assoc.logistic"
+
+# 2. Leer el archivo de resultados
+resultados_gwas <- read_table(ruta_resultados)
+
+# 3. Filtrar y limpiar los resultados
+top_20_snps <- resultados_gwas %>%
+  dplyr::filter(TEST == "ADD") %>%
+  # Ordenar de menor a mayor p-valor (los más significativos primero)
+  dplyr::arrange(P) %>%
+  # Seleccionar las primeras 20 filas
+  dplyr::slice_head(n = 20)
+
+top_20_snps
+
+
+
+#ruta_top20 <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\top_20_GWAS_C1_vs_C4.csv"
+#write.csv(top_20_snps, file = ruta_top20, row.names = FALSE)
+```
+
+
+
+### Validación 
+
+```{r}
+library(dplyr)
+
+# 1. Recuperamos únicamente las columnas de identificación y las covariables 
+# que utilizaremos en PLINK, filtrando por la misma condición (long_covid == 1)
+df_identificadores <- df_clinica %>%
+  dplyr::filter(long_covid == 1) %>%
+  dplyr::select(FID, IID, sexo, edad_final, edad_sexo) 
+  # Nota: si necesitas más covariables (ej: "edad2"), añádelas en el select anterior
+
+# 2. Añadimos la asignación de clusters al dataframe de identificadores
+df_identificadores$Cluster_Asignado <- mejor_lca_v$predclass
+
+# 3. Filtrar los extremos (Clase 1 vs Clase 4) y crear la variable 'extremo'
+df_val_gwas_final <- df_identificadores %>%
+  dplyr::filter(Cluster_Asignado %in% c(1, 4)) %>%
+  dplyr::mutate(extremo = dplyr::if_else(Cluster_Asignado == 4, 1, 0)) %>%
+  # Asegurar el orden estricto inicial requerido por PLINK: FID, IID, extremo
+  dplyr::select(FID, IID, extremo, everything())
+
+# 4. Comprobaciones de control por consola
+cat("\n--- Distribución de los extremos en Validación ---\n")
+print(table(df_val_gwas_final$extremo))
+
+# 5. Definir la ruta de salida para la validación
+ruta_salida_val <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\fenos_val_C1_vs_C4.txt"
+
+# 6. Exportar el archivo plano delimitado por tabulaciones
+write.table(df_val_gwas_final, 
+            file = ruta_salida_val, 
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            sep = "\t")
+
+print("¡Archivo de fenotipos para validación generado con éxito!")
+```
+
+```{r}
+library(dplyr)
+library(readr)
+
+# 1. Ruta del archivo de resultados de la validación
+ruta_resultados_val <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\GWAS_val_CLUS1_VS_C4.assoc.logistic"
+
+# 2. Leer los resultados generados por PLINK
+resultados_val_gwas <- read_table(ruta_resultados_val)
+
+# 3. Filtrar por el test aditivo del SNP y ordenar por significancia
+top_20_val_snps <- resultados_val_gwas %>%
+  # Nos quedamos con el efecto neto del alelo aditivo, obviando las líneas de covariables
+  dplyr::filter(TEST == "ADD") %>%
+  # Ordenar de menor a mayor p-valor (menor número = más significativo)
+  dplyr::arrange(P) %>%
+  # Extraer las primeras 20 filas
+  dplyr::slice_head(n = 20)
+
+# 4. Mostrar en pantalla el top 20 de validación
+View(top_20_val_snps)
+
+# 5. Guardar la tabla resumen en formato CSV
+#ruta_csv_top20_val <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\top_20_GWAS_val_C1_vs_C4.csv"
+#write.csv(top_20_val_snps, file = ruta_csv_top20_val, row.names = FALSE)
+
+```
+
+
+## Comparacion validacion y discovery
+```{r}
+library(dplyr)
+
+# Ventana de exclusión física: 25,000 kb = 25 Mb
+ventana_pb <- 25000000
+
+# ==============================================================================
+# 1. TOP 15 DE DISCOVERY (Asegurando que elija el mejor P-valor de la región)
+# ==============================================================================
+top15_disc_puro <- gwas_disc_completo %>%
+  dplyr::filter(CHR != 22) %>%
+  # ¡CRUCIAL!: Ordenamos primero por P-valor (los mejores arriba)
+  dplyr::arrange(P) %>%
+  # Agrupamos por cromosoma
+  dplyr::group_by(CHR) %>%
+  # Truco estadístico: nos quedamos con el mejor SNP y filtramos los que estén 
+  # en una ventana de 25Mb alrededor de él usando la función 'abs' (absoluto)
+  dplyr::filter(row_number() == 1 | all(abs(BP - BP[1]) > ventana_pb)) %>%
+  dplyr::ungroup() %>%
+  # Asegurar que tras la limpieza nos quedamos con los 15 mejores líderes absolutos
+  dplyr::arrange(P) %>%
+  dplyr::slice_head(n = 15) %>%
+  dplyr::select(CHR, SNP, BP, A1, OR_Disc = OR, P_Disc = P, L95_Disc = L95, U95_Disc = U95) %>%
+  dplyr::inner_join(
+    gwas_val_completo %>% dplyr::select(SNP, A1_Val = A1, OR_Val = OR, P_Val = P, L95_Val = L95, U95_Val = U95),
+    by = "SNP"
+  ) %>%
+  dplyr::mutate(Origen_Top = "Discovery")
+
+# ==============================================================================
+# 2. TOP 15 DE VALIDACIÓN (Asegurando que elija el mejor P-valor de la región)
+# ==============================================================================
+top15_val_puro <- gwas_val_completo %>%
+  dplyr::filter(CHR != 22) %>%
+  # ¡CRUCIAL!: Ordenamos primero por P-valor en Validación
+  dplyr::arrange(P) %>%
+  dplyr::group_by(CHR) %>%
+  dplyr::filter(row_number() == 1 | all(abs(BP - BP[1]) > ventana_pb)) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(P) %>%
+  dplyr::slice_head(n = 15) %>%
+  dplyr::select(CHR, SNP, BP, A1_Val = A1, OR_Val = OR, P_Val = P, L95_Val = L95, U95_Val = U95) %>%
+  dplyr::inner_join(
+    gwas_disc_completo %>% dplyr::select(SNP, A1, OR_Disc = OR, P_Disc = P, L95_Disc = L95, U95_Disc = U95),
+    by = "SNP"
+  ) %>%
+  dplyr::mutate(Origen_Top = "Validacion")
+
+# ==============================================================================
+# 3. UNIFICAR EN UNA SOLA TABLA ESPEJO
+# ==============================================================================
+tabla_gwas_unificada_pura <- dplyr::bind_rows(top15_disc_puro, top15_val_puro) %>%
+  dplyr::select(Origen_Top, CHR, SNP, BP, A1, A1_Val,
+                OR_Disc, P_Disc, L95_Disc, U95_Disc,
+                OR_Val, P_Val, L95_Val, U95_Val) %>%
+  dplyr::mutate(Alerta_Alelo = dplyr::if_else(A1 != A1_Val, "Revisar (Invertido)", "OK"))
+
+# ==============================================================================
+# 4. GUARDAR Y REVISAR
+# ==============================================================================
+print(table(tabla_gwas_unificada_pura$Origen_Top))
+
+tabla_gwas_unificada_pura
+
+#write.csv(tabla_gwas_unificada_pura, 
+     #     file = "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\TABLA_CONJUNTA_TOP15_CORREGIDA.csv", 
+     #     row.names = FALSE)
+```
+
+```{r}
+library(dplyr)
+
+# ==============================================================================
+# 1. FILTRAR Y CRUZAR SNPs CON P < 1e-4 EN AMBAS COHORTES
+# ==============================================================================
+
+# Definimos el umbral matemático (10^-4 = 0.0001)
+umbral_p <- 1e-3
+
+snps_compartidos <- gwas_disc_completo %>%
+  # Filtrar SNPs significativos en Discovery
+  dplyr::filter(P < umbral_p) %>%
+  # Seleccionar columnas clave de Discovery
+  dplyr::select(CHR, SNP, BP, A1, 
+                OR_Disc = OR, P_Disc = P, L95_Disc = L95, U95_Disc = U95) %>%
+  # Cruzar con Validación
+  dplyr::inner_join(
+    gwas_val_completo %>% 
+      dplyr::filter(P < umbral_p) %>% # Filtrar también significativos en Validación
+      dplyr::select(SNP, A1_Val = A1, OR_Val = OR, P_Val = P, L95_Val = L95, U95_Val = U95),
+    by = "SNP"
+  ) %>%
+  # Ordenar el resultado por los más potentes en Discovery
+  dplyr::arrange(P_Disc) %>%
+  # Control de consistencia del alelo de referencia
+  dplyr::mutate(Alerta_Alelo = dplyr::if_else(A1 != A1_Val, "Revisar (Alelo invertido)", "OK"))
+
+
+# ==============================================================================
+# 2. MOSTRAR RESULTADOS Y GUARDAR
+# ==============================================================================
+
+cat("\n--- Número de SNPs que replican con P < 1e-4 en ambas cohortes ---\n")
+print(nrow(snps_compartidos))
+
+# Ver la tabla en la consola
+print(snps_compartidos)
+
+ruta_salida_compartidos <- "R:\\Human_Genotyping-CEGEN\\Backup\\Personales\\Sara\\LongCovid\\EUROPEOS\\CLUSTERING\\SNPs_compartidos_P_menor_1e4.csv"
+#write.csv(snps_compartidos, file = ruta_salida_compartidos, row.names = FALSE)
+
+print("¡Tabla de SNPs compartidos guardada con éxito!")
+```
+
+
+
